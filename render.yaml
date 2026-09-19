@@ -1,0 +1,60 @@
+services:
+  # API Web Service
+  - type: web
+    name: ink-finance-api
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install && npm run build:server
+    startCommand: node dist/server/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: 10000
+      - key: DATABASE_URL
+        fromDatabase:
+          name: neondb
+          property: connection_string
+      - key: BOT_TOKEN
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_BASE_URL
+        sync: false
+      - key: AI_MODEL
+        sync: false
+      - key: BOT_ALLOWED_USERS
+        sync: false
+
+  # Bot Background Service
+  - type: web
+    name: ink-finance-bot
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install && npm run build:server
+    startCommand: node dist/telegram-bot/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: neondb
+          property: connection_string
+      - key: BOT_TOKEN
+        sync: false
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_BASE_URL
+        sync: false
+      - key: AI_MODEL
+        sync: false
+      - key: BOT_ALLOWED_USERS
+        sync: false
+
+databases:
+  # Reference to existing Neon database - we'll use external Neon instead
+  # This section is for reference only
+  - name: neondb
+    plan: free
