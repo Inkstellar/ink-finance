@@ -1,21 +1,37 @@
+# Render Blueprint — ink-finance
+#
+# NOTE: the live services were created via the Render CLI, not from this file.
+# This blueprint mirrors their working configuration for reference and for
+# recreating the stack from scratch (Render Dashboard → New → Blueprint).
+#
+# Key points:
+#   - `--include=dev` is mandatory: Render sets NODE_ENV=production during
+#     builds, and plain `npm install` would skip @types/* and tsx.
+#   - `npx prisma generate` regenerates the Prisma client after install.
+#   - We run TypeScript directly with tsx instead of pre-compiling with tsc,
+#     which avoids ESM/CJS mismatches with package.json's "type": "module".
+#   - Free plan allows web services only (no background_worker), so the bot
+#     also runs as a web service and serves /health on $PORT.
+
 services:
-  # API Web Service
+  # ── API ────────────────────────────────────────────────────
   - type: web
     name: ink-finance-api
     runtime: node
     region: oregon
     plan: free
-    buildCommand: npm install
+    branch: main
+    repo: https://github.com/Inkstellar/ink-finance
+    buildCommand: npm install --include=dev && npx prisma generate
     startCommand: npx tsx server/index.ts
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: API_PORT
         value: 10000
       - key: DATABASE_URL
-        fromDatabase:
-          name: neondb
-          property: connection_string
+        sync: false   # Neon connection string — set in the dashboard
       - key: BOT_TOKEN
         sync: false
       - key: AI_API_KEY
@@ -27,21 +43,21 @@ services:
       - key: BOT_ALLOWED_USERS
         sync: false
 
-  # Bot Background Service
+  # ── Telegram Bot ───────────────────────────────────────────
   - type: web
     name: ink-finance-bot
     runtime: node
     region: oregon
     plan: free
-    buildCommand: npm install && npm run build:server
-    startCommand: node dist/telegram-bot/index.js
+    branch: main
+    repo: https://github.com/Inkstellar/ink-finance
+    buildCommand: npm install --include=dev && npx prisma generate
+    startCommand: npx tsx telegram-bot/index.ts
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        fromDatabase:
-          name: neondb
-          property: connection_string
+        sync: false
       - key: BOT_TOKEN
         sync: false
       - key: AI_API_KEY
@@ -50,11 +66,8 @@ services:
         sync: false
       - key: AI_MODEL
         sync: false
+      # Required: the bot cannot reach localhost — point it at the API service.
+      - key: VITE_API_URL
+        value: https://ink-finance-api.onrender.com
       - key: BOT_ALLOWED_USERS
         sync: false
-
-databases:
-  # Reference to existing Neon database - we'll use external Neon instead
-  # This section is for reference only
-  - name: neondb
-    plan: free
