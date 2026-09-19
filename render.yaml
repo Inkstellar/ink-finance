@@ -71,3 +71,24 @@ services:
         value: https://ink-finance-api.onrender.com
       - key: BOT_ALLOWED_USERS
         sync: false
+
+  # ── Frontend (static site — always free, no plan field) ────
+  - type: web
+    name: ink-finance-web
+    runtime: static
+    branch: main
+    repo: https://github.com/Inkstellar/ink-finance
+    buildCommand: npm install --include=dev && npm run build
+    staticPublishPath: dist
+    # SPA fallback so deep links (/transactions, /users, …) don't 404.
+    # Equivalent to:
+    #   curl -X PUT https://api.render.com/v1/services/<id>/routes \
+    #     -d '[{"type":"rewrite","source":"/*","destination":"/index.html"}]'
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      # Vite inlines VITE_* vars at BUILD time — host root, no /api suffix.
+      - key: VITE_API_URL
+        value: https://ink-finance-api.onrender.com
