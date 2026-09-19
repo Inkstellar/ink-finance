@@ -8,6 +8,9 @@
     "dev": "concurrently -n api,web -c blue,green \"npm run server\" \"npm run web\"",
     "web": "vite",
     "server": "tsx server/index.ts",
+    "bot": "tsx telegram-bot/index.ts",
+    "bot:watch": "tsx watch telegram-bot/index.ts",
+    "dev:all": "concurrently -n api,web,bot -c blue,green,yellow \"npm run server\" \"npm run web\" \"npm run bot\"",
     "build": "tsc -p tsconfig.app.json && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.app.json --noEmit",
@@ -25,11 +28,14 @@
     "@mui/x-data-grid": "^7.7.0",
     "@prisma/client": "^5.22.0",
     "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
     "express": "^4.21.1",
+    "openai": "^4.68.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.2",
-    "recharts": "^2.13.3"
+    "recharts": "^2.13.3",
+    "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
