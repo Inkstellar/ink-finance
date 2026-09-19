@@ -1,0 +1,183 @@
+// Prisma schema for ink-finance
+// Uses the same Neon PostgreSQL database as the puck-nextjs-starter project.
+// All table names are prefixed with "fin_" to avoid conflicts with existing tables.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Accounts ──────────────────────────────────────────────
+
+model FinAccount {
+  id        String      @id @default(cuid())
+  name      String
+  type      FinAccountType
+  balance   Float      @default(0)
+  currency  String     @default("INR")
+  notes     String?
+  archived  Boolean    @default(false)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  transactions FinTransaction[]
+  loans        FinLoan[]
+
+  @@map("fin_accounts")
+}
+
+enum FinAccountType {
+  CHECKING
+  SAVINGS
+  CREDIT_CARD
+  CASH
+  WALLET
+  INVESTMENT
+  LOAN
+}
+
+// ─── Categories ─────────────────────────────────────────────
+
+model FinCategory {
+  id       String            @id @default(cuid())
+  name     String
+  type     FinCategoryType
+  color    String            @default("#1976d2")
+  icon     String?
+  parentId String?
+  parent   FinCategory?      @relation("CategoryHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  children FinCategory[]     @relation("CategoryHierarchy")
+  budgets  FinBudget[]
+  transactions FinTransaction[]
+
+  @@map("fin_categories")
+}
+
+enum FinCategoryType {
+  INCOME
+  EXPENSE
+  INVESTMENT
+  LOAN_PAYMENT
+  TRANSFER
+}
+
+// ─── Transactions ───────────────────────────────────────────
+
+model FinTransaction {
+  id          String            @id @default(cuid())
+  amount      Float
+  type        FinTransactionType
+  date        DateTime
+  description String
+  notes       String?
+  accountId   String
+  account     FinAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  categoryId  String?
+  category    FinCategory?      @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  toAccountId String?           // for transfers
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  @@map("fin_transactions")
+}
+
+enum FinTransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+  INVESTMENT_BUY
+  INVESTMENT_SELL
+  LOAN_PAYMENT
+}
+
+// ─── Budgets ────────────────────────────────────────────────
+
+model FinBudget {
+  id          String      @id @default(cuid())
+  amount      Float
+  month       Int          // 1-12
+  year        Int
+  categoryId  String
+  category    FinCategory  @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([categoryId, month, year])
+  @@map("fin_budgets")
+}
+
+// ─── Investments ────────────────────────────────────────────
+
+model FinInvestment {
+  id            String   @id @default(cuid())
+  symbol        String
+  name          String
+  exchange      String?
+  assetType     FinAssetType
+  quantity      Float
+  avgBuyPrice   Float
+  currentPrice  Float
+  currency      String   @default("INR")
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@map("fin_investments")
+}
+
+enum FinAssetType {
+  STOCK
+  MUTUAL_FUND
+  ETF
+  BOND
+  CRYPTO
+  GOLD
+  OTHER
+}
+
+// ─── Loans ──────────────────────────────────────────────────
+
+model FinLoan {
+  id              String           @id @default(cuid())
+  name            String
+  lender          String?
+  principal       Float
+  interestRate   Float            // annual % (e.g. 8.5)
+  tenureMonths    Int
+  monthlyEmi      Float
+  disbursedOn    DateTime
+  endDate         DateTime?
+  remainingPrincipal Float        @default(0)
+  status          FinLoanStatus    @default(ACTIVE)
+  accountId       String?
+  account         FinAccount?      @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  payments        FinLoanPayment[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@map("fin_loans")
+}
+
+enum FinLoanStatus {
+  ACTIVE
+  CLOSED
+  PRECLOSED
+}
+
+model FinLoanPayment {
+  id          String   @id @default(cuid())
+  loanId      String
+  loan        FinLoan  @relation(fields: [loanId], references: [id], onDelete: Cascade)
+  amount      Float
+  principal   Float
+  interest    Float
+  balance     Float
+  paidOn      DateTime
+  createdAt   DateTime @default(now())
+
+  @@map("fin_loan_payments")
+}
