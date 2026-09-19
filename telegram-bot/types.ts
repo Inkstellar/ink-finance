@@ -33,6 +33,14 @@ export interface ReceiptAnalysis {
   confidence: number;  // 0-1
 }
 
+export interface FinUser {
+  id: string;
+  name: string;
+  initials: string;
+  color: string;
+  telegramId?: string | null;
+}
+
 export interface PendingTransaction {
   id: string;
   telegramUserId: number;
@@ -40,6 +48,7 @@ export interface PendingTransaction {
   messageText: string;
   analysis: ReceiptAnalysis;
   categoryId?: string;
+  userId?: string | null;
   createdAt: number;
 }
 
@@ -51,4 +60,5 @@ export interface CreateTransactionPayload {
   notes?: string;
   accountId: string;
   categoryId?: string;
+  userId?: string | null;
 }

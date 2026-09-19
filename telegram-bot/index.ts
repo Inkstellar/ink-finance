@@ -2,9 +2,9 @@ import 'dotenv/config';
 import { Telegraf, Markup, type Context } from 'telegraf';
 import { message } from 'telegraf/filters';
 import type { Update } from 'telegraf/types';
-import { analyzeReceipt, DEFAULT_CATEGORIES } from './ai-vision.js';
-import { FinanceApiClient } from './api-client.js';
-import type { PendingTransaction, ReceiptAnalysis } from './types.js';
+import { analyzeReceipt, DEFAULT_CATEGORIES } from './ai-vision';
+import { FinanceApiClient } from './api-client';
+import type { PendingTransaction, ReceiptAnalysis, FinUser } from './types';
 
 // ── Config ────────────────────────────────────────────────
 const BOT_TOKEN = process.env.BOT_TOKEN!;
@@ -22,6 +22,9 @@ if (!BOT_TOKEN) {
 const api = new FinanceApiClient(API_URL);
 const pending = new Map<string, PendingTransaction>();
 const PENDING_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Track which step each pending transaction is at: 'user' | 'account'
+const pendingStep = new Map<string, 'user' | 'account'>();
 
 // Generate a short unique ID for pending transactions
 function shortId(): string {
@@ -101,7 +104,8 @@ bot.start(async ctx => {
     `👋 *Welcome to Ink Finance Bot!*\n\n` +
     `📸 Send a photo of a bill, receipt, or UPI payment screenshot.\n` +
     `🤖 AI will extract merchant, amount, date, and category.\n` +
-    `✅ Tap an account button to confirm the transaction.\n\n` +
+    `👤 First pick who is adding the entry (K or P).\n` +
+    `✅ Then pick an account to confirm the transaction.\n\n` +
     `Your Telegram ID: \`${ctx.from.id}\`\n` +
     `Add this to BOT_ALLOWED_USERS in .env to restrict access.\n\n` +
     `Commands:\n` +
@@ -231,8 +235,9 @@ bot.on(message('photo'), async ctx => {
       analysis.type,
     );
 
-    // Fetch accounts
+    // Fetch accounts and users
     const accounts = await api.getAccounts();
+    const users = await api.getUsers();
     if (accounts.length === 0) {
       await ctx.telegram.editMessageText(
         ctx.chat.id,
@@ -254,6 +259,7 @@ bot.on(message('photo'), async ctx => {
       categoryId,
       createdAt: Date.now(),
     });
+    pendingStep.set(pid, 'user');
 
     // Build confirmation message
     const confidence = analysis.confidence >= 0.8 ? '🟢' : analysis.confidence >= 0.5 ? '🟡' : '🔴';
@@ -268,16 +274,16 @@ bot.on(message('photo'), async ctx => {
     msg += `🎯 Confidence: ${(analysis.confidence * 100).toFixed(0)}%\n`;
     if (analysis.rawText)
       msg += `\n📄 _Extracted text:_\n\`${analysis.rawText.slice(0, 500)}\``;
-    msg += `\n\n✅ *Select account to confirm:*`;
+    msg += `\n\n👤 *Who is adding this transaction?*`;
 
-    // Build inline keyboard — one button per account + cancel
-    const rows = accounts.map(a => [
+    // Build inline keyboard — one button per user + skip
+    const rows = users.map(u => [
       Markup.button.callback(
-        `${a.name} (${fmt(a.balance)})`,
-        `tx:${pid}:${a.id}`,
+        `${u.initials} — ${u.name}`,
+        `usr:${pid}:${u.id}`,
       ),
     ]);
-    rows.push([Markup.button.callback('❌ Cancel', `cancel:${pid}`)]);
+    rows.push([Markup.button.callback('⏭ Skip', `skip:${pid}`)]);
 
     await ctx.telegram.editMessageText(
       ctx.chat.id,
@@ -295,7 +301,63 @@ bot.on(message('photo'), async ctx => {
   }
 });
 
-// ── Transaction confirmation callback ─────────────────────
+// ── User selection callback ───────────────────────────────
+bot.action(/usr:(.+):(.+)/, async ctx => {
+  const pid = ctx.match[1];
+  const userId = ctx.match[2];
+  const p = pending.get(pid);
+
+  if (!p) {
+    await ctx.answerCbQuery('⏰ Expired — send the photo again.');
+    return;
+  }
+  if (p.telegramUserId !== ctx.from.id) {
+    await ctx.answerCbQuery('⛔ This is not your transaction.');
+    return;
+  }
+  if (pendingStep.get(pid) !== 'user') {
+    await ctx.answerCbQuery('⚠️ Wrong step.');
+    return;
+  }
+
+  await ctx.answerCbQuery();
+  pending.set(pid, { ...p, userId });
+  pendingStep.set(pid, 'account');
+
+  // Now show account picker
+  const accounts = await api.getAccounts();
+  const confidence = p.analysis.confidence >= 0.8 ? '🟢' : p.analysis.confidence >= 0.5 ? '🟡' : '🔴';
+  const matchedUser = (await api.getUsers()).find(u => u.id === userId);
+
+  let msg = `👤 *User:* ${matchedUser?.name || '?'}\n`;
+  msg += `🏪 *Merchant:* ${p.analysis.merchant}\n`;
+  msg += `💰 *Amount:* ${fmt(p.analysis.amount)}\n`;
+  msg += `🏷 *Category:* ${p.analysis.category}\n\n`;
+  msg += `✅ *Select account to confirm:*`;
+
+  const rows = accounts.map(a => [
+    Markup.button.callback(
+      `${a.name} (${fmt(a.balance)})`,
+      `tx:${pid}:${a.id}`,
+    ),
+  ]);
+  rows.push([Markup.button.callback('❌ Cancel', `cancel:${pid}`)]);
+
+  await ctx.reply(
+    msg,
+    { parse_mode: 'Markdown', ...Markup.inlineKeyboard(rows) },
+  );
+});
+
+// ── Skip user callback ─────────────────────────────────────
+bot.action(/skip:(.+)/, async ctx => {
+  const pid = ctx.match[1];
+  const p = pending.get(pid);
+  if (!p || pendingStep.get(pid) !== 'user') return;
+  await ctx.answerCbQuery('Skipped');
+  // Fall through to account picker with no user
+  pendingStep.set(pid, 'account');
+});
 bot.action(/tx:(.+):(.+)/, async ctx => {
   const pid = ctx.match[1];
   const accountId = ctx.match[2];
@@ -324,19 +386,27 @@ bot.action(/tx:(.+):(.+)/, async ctx => {
       ].filter(Boolean).join('\n') || undefined,
       accountId,
       categoryId: p.categoryId,
+      userId: p.userId || null,
     });
 
     pending.delete(pid);
+    pendingStep.delete(pid);
 
-    const account = (await api.getAccounts()).find(a => a.id === accountId);
+    const [account, matchedUser] = await Promise.all([
+      api.getAccounts(),
+      p.userId ? api.getUsers() : Promise.resolve([]),
+    ]);
+    const acct = account.find(a => a.id === accountId);
+    const user = matchedUser.find(u => u.id === p.userId);
     await ctx.editMessageText(
       `✅ *Transaction Created!*\n\n` +
+      `👤 ${user?.name || '—'}\n` +
       `🏪 ${p.analysis.merchant}\n` +
       `💰 ${fmt(p.analysis.amount)} (${p.analysis.type})\n` +
       `📅 ${p.analysis.date}\n` +
       `🏷 ${p.analysis.category}\n` +
-      `💳 ${account?.name || 'Account'}\n\n` +
-      `New balance: ${account ? fmt(account.balance) : '—'}`,
+      `💳 ${acct?.name || 'Account'}\n\n` +
+      `New balance: ${acct ? fmt(acct.balance) : '—'}`,
       { parse_mode: 'Markdown' },
     );
   } catch (err) {
@@ -404,7 +474,7 @@ bot.on(message('text'), async ctx => {
     return;
   }
 
-  // Multiple accounts — show selection
+  // Multiple accounts — show user picker first
   const pid = shortId();
   pending.set(pid, {
     id: pid,
@@ -419,18 +489,20 @@ bot.on(message('text'), async ctx => {
     categoryId,
     createdAt: Date.now(),
   });
+  pendingStep.set(pid, 'user');
 
-  const rows = accounts.map(a => [
+  const users = await api.getUsers();
+  const userRows = users.map(u => [
     Markup.button.callback(
-      `${a.name} (${fmt(a.balance)})`,
-      `tx:${pid}:${a.id}`,
+      `${u.initials} — ${u.name}`,
+      `usr:${pid}:${u.id}`,
     ),
   ]);
-  rows.push([Markup.button.callback('❌ Cancel', `cancel:${pid}`)]);
+  userRows.push([Markup.button.callback('⏭ Skip', `skip:${pid}`)]);
 
   await ctx.reply(
-    `Confirm: ${type === 'INCOME' ? '💚' : '💔'} ${fmt(amount)} → ${merchant} (${category})\nSelect account:`,
-    Markup.inlineKeyboard(rows),
+    `👤 *Who is adding this transaction?*`,
+    { parse_mode: 'Markdown', ...Markup.inlineKeyboard(userRows) },
   );
 });
 
@@ -440,6 +512,7 @@ setInterval(() => {
   for (const [id, p] of pending) {
     if (now - p.createdAt > PENDING_TTL) {
       pending.delete(id);
+      pendingStep.delete(id);
     }
   }
 }, 60_000);

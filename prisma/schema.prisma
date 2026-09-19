@@ -65,6 +65,22 @@ enum FinCategoryType {
   TRANSFER
 }
 
+// ─── Users ────────────────────────────────────────────────
+
+model FinUser {
+  id           String            @id @default(cuid())
+  name         String
+  initials     String            @default("U")
+  color        String            @default("#7c3aed")
+  telegramId   String?           @unique // link to Telegram account
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  transactions FinTransaction[]
+
+  @@map("fin_users")
+}
+
 // ─── Transactions ───────────────────────────────────────────
 
 model FinTransaction {
@@ -74,6 +90,8 @@ model FinTransaction {
   date        DateTime
   description String
   notes       String?
+  userId      String?
+  user        FinUser?          @relation(fields: [userId], references: [id], onDelete: SetNull)
   accountId   String
   account     FinAccount        @relation(fields: [accountId], references: [id], onDelete: Cascade)
   categoryId  String?

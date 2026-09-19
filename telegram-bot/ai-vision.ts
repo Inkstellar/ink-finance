@@ -1,5 +1,5 @@
 import OpenAI from 'openai';
-import type { ReceiptAnalysis } from './types.js';
+import type { ReceiptAnalysis } from './types';
 
 const apiKey = process.env.AI_API_KEY!;
 const baseURL = process.env.AI_BASE_URL!;

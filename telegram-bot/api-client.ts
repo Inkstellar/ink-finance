@@ -1,8 +1,9 @@
 import type {
   FinAccount,
   FinCategory,
+  FinUser,
   CreateTransactionPayload,
-} from './types.js';
+} from './types';
 
 /**
  * Thin wrapper around the ink-finance REST API (port 3456).
@@ -62,6 +63,12 @@ export class FinanceApiClient {
     payload: CreateTransactionPayload,
   ): Promise<Record<string, unknown>> {
     return this.postJson('/api/transactions', payload);
+  }
+
+  // ── Users ───────────────────────────────────────────────
+
+  async getUsers(): Promise<FinUser[]> {
+    return this.getJson<FinUser[]>('/api/users');
   }
 
   // ── Dashboard ─────────────────────────────────────────────

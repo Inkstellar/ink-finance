@@ -51,6 +51,34 @@ app.delete('/api/accounts/:id', async (req, res) => {
   res.json({ success: true });
 });
 
+// ─── Users ─────────────────────────────────────────────────
+
+app.get('/api/users', async (_req, res) => {
+  const users = await prisma.finUser.findMany({ orderBy: { name: 'asc' } });
+  res.json(users);
+});
+
+app.post('/api/users', async (req, res) => {
+  const { name, initials, color, telegramId } = req.body;
+  const user = await prisma.finUser.create({
+    data: { name, initials: initials || name.slice(0, 1).toUpperCase(), color: color || '#7c3aed', telegramId },
+  });
+  res.json(user);
+});
+
+app.put('/api/users/:id', async (req, res) => {
+  const { id } = req.params;
+  const { name, initials, color, telegramId } = req.body;
+  const user = await prisma.finUser.update({ where: { id }, data: { name, initials, color, telegramId } });
+  res.json(user);
+});
+
+app.delete('/api/users/:id', async (req, res) => {
+  const { id } = req.params;
+  await prisma.finUser.delete({ where: { id } });
+  res.json({ success: true });
+});
+
 // ─── Categories ─────────────────────────────────────────────
 
 app.get('/api/categories', async (_req, res) => {
@@ -78,14 +106,15 @@ app.delete('/api/categories/:id', async (req, res) => {
 // ─── Transactions ──────────────────────────────────────────
 
 app.get('/api/transactions', async (req, res) => {
-  const { accountId, categoryId, type, limit, offset } = req.query;
+  const { accountId, categoryId, type, userId, limit, offset } = req.query;
   const transactions = await prisma.finTransaction.findMany({
     where: {
       ...(accountId && { accountId: String(accountId) }),
       ...(categoryId && { categoryId: String(categoryId) }),
-      ...(type && { type: String(type) }),
+      ...(type && { type: String(type) as 'INCOME' | 'EXPENSE' | 'TRANSFER' | 'INVESTMENT_BUY' | 'INVESTMENT_SELL' | 'LOAN_PAYMENT' }),
+      ...(userId && { userId: String(userId) }),
     },
-    include: { account: true, category: true },
+    include: { account: true, category: true, user: true },
     orderBy: { date: 'desc' },
     ...(limit && { take: parseInt(String(limit)) }),
     ...(offset && { skip: parseInt(String(offset)) }),
@@ -94,7 +123,7 @@ app.get('/api/transactions', async (req, res) => {
 });
 
 app.post('/api/transactions', async (req, res) => {
-  const { amount, type, date, description, notes, accountId, categoryId, toAccountId } = req.body;
+  const { amount, type, date, description, notes, accountId, categoryId, userId, toAccountId } = req.body;
   const tx = await prisma.finTransaction.create({
     data: {
       amount,
@@ -102,11 +131,12 @@ app.post('/api/transactions', async (req, res) => {
       date: new Date(date),
       description,
       notes,
+      userId,
       accountId,
       categoryId,
       toAccountId,
     },
-    include: { account: true, category: true },
+    include: { account: true, category: true, user: true },
   });
 
   // Update account balance
@@ -249,7 +279,7 @@ app.get('/api/dashboard', async (_req, res) => {
     prisma.finTransaction.findMany({
       take: 50,
       orderBy: { date: 'desc' },
-      include: { account: true, category: true },
+      include: { account: true, category: true, user: true },
     }),
     prisma.finInvestment.findMany(),
     prisma.finLoan.findMany({ where: { status: 'ACTIVE' } }),

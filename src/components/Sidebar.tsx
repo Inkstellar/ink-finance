@@ -5,6 +5,7 @@ import ReceiptIcon from '@mui/icons-material/Receipt';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import BudgetIcon from '@mui/icons-material/PieChart';
+import PeopleIcon from '@mui/icons-material/People';
 
 const drawerWidth = 240;
 
@@ -14,6 +15,7 @@ const navItems = [
   { label: 'Investments', path: '/investments', icon: <TrendingUpIcon /> },
   { label: 'Loans', path: '/loans', icon: <AccountBalanceIcon /> },
   { label: 'Budget', path: '/budget', icon: <BudgetIcon /> },
+  { label: 'Users', path: '/users', icon: <PeopleIcon /> },
 ];
 
 export default function Sidebar() {
