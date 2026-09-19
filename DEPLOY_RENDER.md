@@ -176,6 +176,47 @@ variable yet is not broken. Verified by running the formatters under
 > The static site doesn't need `TZ`: it only affects the build, and the browser
 > decides how dates render. `formatDate` pins IST so that's deterministic too.
 
+### 7. The static-site build typechecks the server — and needs a fresh Prisma client
+
+`tsconfig.app.json` includes `server`, not just `src`:
+
+```json
+"include": ["src", "server", "vite.config.ts"]
+```
+
+That's deliberate — it means a frontend deploy also typechecks the API — but it
+makes the **web** build depend on `@prisma/client` being generated. The api and
+bot build commands run `npx prisma generate`; the web one did not.
+
+This stayed invisible until the Prisma schema and `server/index.ts` moved
+together. Render caches `node_modules` between builds, so `npm install` reported
+`up to date` and `@prisma/client`'s postinstall never re-ran — leaving a client
+generated from the *previous* schema. Adding `FinLoan.userId` therefore broke the
+static site:
+
+```
+server/index.ts(226,7): error TS2353: ... 'user' does not exist in type 'FinLoanInclude<DefaultArgs>'.
+server/index.ts(248,7): error TS2353: ... 'userId' does not exist in type ...
+==> Build failed
+```
+
+The api and bot deployed fine from the same commit — only the web failed, which
+is what makes this one confusing.
+
+**Fix:** `build` now generates the client itself, in every environment:
+
+```json
+"build": "prisma generate && tsc -p tsconfig.app.json && vite build"
+```
+
+`prisma generate` only reads the schema and needs no database connection, so this
+is safe on a static site. Verified that the generated client then contains
+`FinLoanInclude.user` and `FinLoanUncheckedCreateInput.userId`.
+
+**Takeaway:** when the schema and server code change in the same commit, check
+*all three* services, not just the api — a green api deploy does not mean the
+static site built.
+
 ---
 
 ## ⚠️ Free-tier spin-down (important)

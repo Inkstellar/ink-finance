@@ -20,7 +20,7 @@
     "web:render": "node scripts/run-with-env.mjs .env.render -- vite --mode render",
     "bot:render": "node scripts/run-with-env.mjs .env.local .env.render -- tsx telegram-bot/index.ts",
     "render:status": "node scripts/render-status.mjs",
-    "build": "tsc -p tsconfig.app.json && vite build",
+    "build": "prisma generate && tsc -p tsconfig.app.json && vite build",
     "build:server": "tsc -p tsconfig.json",
     "build:dev": "npx tsx server/index.ts",
     "preview": "vite preview",
