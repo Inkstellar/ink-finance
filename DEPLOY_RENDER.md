@@ -34,9 +34,9 @@
    ```
    NODE_ENV = production
    API_PORT = 10000
-   DATABASE_URL = postgresql://neondb_owner:npg_2S4zltRpNEMq@ep-purple-sound-ayfxaygl-pooler.c-5.us-east-2.aws.neon.tech/ink_finance?sslmode=require
-   BOT_TOKEN = 8646207104:AAHCdFUtqFRLq2CFTQ1I5XAH72ErcvPS71k
-   AI_API_KEY = sk-nry-EEzkH8PX4lO2MStGivJcN5BoUAjinmyr209c0cviP94
+   DATABASE_URL = postgresql://neondb_owner:xxx@xxx.c-5.us-east-2.aws.neon.tech/ink_finance?sslmode=require
+   BOT_TOKEN = xxx
+   AI_API_KEY = xxx
    AI_BASE_URL = https://router.bynara.id/v1
    AI_MODEL = agnes-2.5-flash
    BOT_ALLOWED_USERS = (leave empty or add your Telegram ID)
