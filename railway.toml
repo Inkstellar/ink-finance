@@ -1,0 +1,28 @@
+# Build phase
+[build]
+builder = "nixpacks"
+buildCommand = "npm install && npm run build:server"
+
+# API service
+[[services]]
+name = "api"
+family = "ink-finance"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 10
+ipAccess = []
+
+# Start the API server (compiled JS)
+startCommand = "node dist/server/index.js"
+
+# Environment variables for API
+[services.vars]
+NODE_ENV = "production"
+
+# Bot service  
+[[services]]
+name = "bot"
+family = "ink-finance"
+startCommand = "node dist/telegram-bot/index.js"
+
+[services.vars]
+NODE_ENV = "production"

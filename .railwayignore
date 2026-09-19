@@ -1,0 +1,8 @@
+package-lock.json
+node_modules
+.env
+.env.local
+dist
+.prism
+*.log
+.DS_Store
