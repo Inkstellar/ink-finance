@@ -517,6 +517,30 @@ setInterval(() => {
   }
 }, 60_000);
 
+// ── Health-check HTTP server ──────────────────────────────
+// Render (and most PaaS) expect a web service to bind to $PORT.
+// This tiny server keeps the service healthy without affecting the bot.
+import { createServer } from 'node:http';
+
+const HEALTH_PORT = parseInt(process.env.PORT || '10000', 10);
+
+createServer((req, res) => {
+  if (req.url === '/health' || req.url === '/') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      status: 'ok',
+      service: 'ink-finance-bot',
+      pending: pending.size,
+      startedAt: new Date().toISOString(),
+    }));
+  } else {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+  }
+}).listen(HEALTH_PORT, () => {
+  console.log(`   Health endpoint: http://0.0.0.0:${HEALTH_PORT}/health`);
+});
+
 // ── Launch ────────────────────────────────────────────────
 // Note: in Telegraf 4.x, bot.launch() only resolves when the bot STOPS,
 // so we log synchronously right after calling it.
@@ -526,10 +550,27 @@ bot.catch((err, ctx) => {
   ctx?.reply?.('❌ Something went wrong. Please try again.').catch(() => {});
 });
 
-bot.launch().catch(err => {
-  console.error('Failed to launch bot:', err);
-  process.exit(1);
-});
+// Launch with retry — a 409 Conflict is transient during zero-downtime
+// deploys (old + new instance overlap while polling getUpdates).
+async function launchWithRetry(attempt = 1): Promise<void> {
+  try {
+    await bot.launch();
+  } catch (err: any) {
+    const isConflict = err?.response?.error_code === 409;
+    if (isConflict && attempt <= 10) {
+      const wait = Math.min(5 * attempt, 30);
+      console.warn(
+        `⚠️  409 Conflict (another instance polling). Retry ${attempt}/10 in ${wait}s...`,
+      );
+      await new Promise(r => setTimeout(r, wait * 1000));
+      return launchWithRetry(attempt + 1);
+    }
+    console.error('Failed to launch bot:', err);
+    process.exit(1);
+  }
+}
+
+launchWithRetry();
 
 console.log('🤖 Ink Finance Telegram Bot is running...');
 console.log(`   API: ${API_URL}`);
