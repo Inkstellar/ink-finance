@@ -112,7 +112,7 @@ export default function Budget() {
                       {b.category.name}
                     </Box>
                   </TableCell>
-                  <TableCell align="right" fontWeight={600}>{formatINR(b.amount)}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 600 }}>{formatINR(b.amount)}</TableCell>
                   <TableCell align="right" color="error.main">{formatINR(spent)}</TableCell>
                   <TableCell align="right" sx={{ color: remaining >= 0 ? 'success.main' : 'error.main' }}>
                     {formatINR(remaining)}

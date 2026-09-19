@@ -121,7 +121,7 @@ export default function Investments() {
                   <TableCell align="right">{inv.quantity}</TableCell>
                   <TableCell align="right">{formatINRDecimal(inv.avgBuyPrice)}</TableCell>
                   <TableCell align="right">{formatINRDecimal(inv.currentPrice)}</TableCell>
-                  <TableCell align="right" fontWeight={600}>{formatINR(value)}</TableCell>
+                  <TableCell align="right" sx={{ fontWeight: 600 }}>{formatINR(value)}</TableCell>
                   <TableCell align="right" sx={{ color: pnl >= 0 ? 'success.main' : 'error.main', fontWeight: 600 }}>
                     {formatINR(pnl)}
                     <Typography variant="caption" display="block">
