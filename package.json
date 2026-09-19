@@ -15,6 +15,7 @@
     "dev:all": "concurrently -n api,web,bot -c blue,green,yellow \"npm run server\" \"npm run web\" \"npm run bot\"",
     "build": "tsc -p tsconfig.app.json && vite build",
     "build:server": "tsc -p tsconfig.json",
+    "build:dev": "npx tsx server/index.ts",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "db:generate": "prisma generate",
