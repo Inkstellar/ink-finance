@@ -4,11 +4,13 @@ import { message } from 'telegraf/filters';
 import type { Update } from 'telegraf/types';
 import { analyzeReceipt, DEFAULT_CATEGORIES } from './ai-vision';
 import { FinanceApiClient } from './api-client';
-import type { PendingTransaction, ReceiptAnalysis, FinUser } from './types';
+import { todayIST } from './dates';
+import type { PendingTransaction, PendingLoan, ReceiptAnalysis, FinUser } from './types';
 
 // ── Config ────────────────────────────────────────────────
 const BOT_TOKEN = process.env.BOT_TOKEN!;
 const API_URL   = process.env.VITE_API_URL || 'http://localhost:3456';
+const WEB_URL   = process.env.WEB_URL || API_URL.replace(':3456', ':5179');
 const ALLOWED   = process.env.BOT_ALLOWED_USERS
   ? process.env.BOT_ALLOWED_USERS.split(',').map(s => parseInt(s.trim()))
   : [];
@@ -18,6 +20,18 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
+// ── Command registry ──────────────────────────────────────
+// Single source of truth: /help renders this list and it is also
+// published to Telegram via setMyCommands so "/" shows the menu.
+const COMMANDS = [
+  { command: 'start',      description: 'Welcome message and quick intro' },
+  { command: 'help',       description: 'List all available commands' },
+  { command: 'loan',       description: 'Add a loan — /loan 5000000 -> Housing -> Kousi' },
+  { command: 'balance',    description: 'Show dashboard summary' },
+  { command: 'categories', description: 'List all categories' },
+  { command: 'setup',      description: 'Create default categories and accounts' },
+];
+
 // ── State ──────────────────────────────────────────────────
 const api = new FinanceApiClient(API_URL);
 const pending = new Map<string, PendingTransaction>();
@@ -25,6 +39,11 @@ const PENDING_TTL = 5 * 60 * 1000; // 5 minutes
 
 // Track which step each pending transaction is at: 'user' | 'account'
 const pendingStep = new Map<string, 'user' | 'account'>();
+
+// Loan drafts mid-way through the /loan workflow, and how far along each is
+const loanDrafts = new Map<string, PendingLoan>();
+type LoanStep = 'tenure' | 'rate' | 'confirm';
+const loanStep = new Map<string, LoanStep>();
 
 // Generate a short unique ID for pending transactions
 function shortId(): string {
@@ -83,6 +102,311 @@ async function matchOrCreateCategory(
   return created.id;
 }
 
+// ── Loans ─────────────────────────────────────────────────
+// Template:  loan <amount> -> <type> -> <owner> [-> <lender>]
+// e.g.       loan 5000000 -> Housing -> Kousi -> HDFC Bank
+// The bot then asks for the tenure and interest rate, computes the
+// EMI, and saves the loan.
+
+interface LoanTypePreset {
+  label: string;      // shown to the user
+  name: string;       // stored as the loan's name
+  rate: number;       // suggested annual rate (%)
+  tenure: number;     // suggested tenure (months)
+  aliases: string[];  // accepted in the template
+}
+
+const LOAN_TYPES: LoanTypePreset[] = [
+  { label: 'Housing',   name: 'Housing Loan',   rate: 8.5, tenure: 240, aliases: ['housing', 'home', 'house', 'mortgage'] },
+  { label: 'Car',       name: 'Car Loan',       rate: 9.5, tenure: 84,  aliases: ['car', 'auto', 'vehicle', 'bike', 'two-wheeler'] },
+  { label: 'Personal',  name: 'Personal Loan',  rate: 12,  tenure: 36,  aliases: ['personal'] },
+  { label: 'Education', name: 'Education Loan', rate: 10,  tenure: 60,  aliases: ['education', 'edu', 'student'] },
+  { label: 'Gold',      name: 'Gold Loan',      rate: 11,  tenure: 24,  aliases: ['gold'] },
+  { label: 'Business',  name: 'Business Loan',  rate: 13,  tenure: 48,  aliases: ['business'] },
+  { label: 'Other',     name: 'Loan',           rate: 10,  tenure: 36,  aliases: ['other', 'misc'] },
+];
+
+const TENURE_OPTIONS = [12, 24, 36, 60, 84, 120, 180, 240];
+const RATE_OPTIONS   = [7.5, 8, 8.5, 9, 9.5, 10, 10.5, 11, 12, 13, 14, 15];
+
+/** Split the template on any of: -> → => > | (commas are NOT separators, so "50,00,000" stays intact) */
+const LOAN_ARROW = /\s*(?:->|→|=>|>|\|)\s*/;
+
+/** Matches a message that is trying to use the loan template (bare text or /loan). */
+const LOAN_PREFIX = /^\/?loan(?:@[\w_]+)?\b/i;
+
+const LOAN_USAGE =
+  `🏦 *Add a loan*\n\n` +
+  `\`loan <amount> -> <type> -> <owner>\`\n\n` +
+  `Examples:\n` +
+  `\`loan 5000000 -> Housing -> Kousi\`\n` +
+  `\`loan 8L -> Car -> Preeti -> HDFC Bank\`\n\n` +
+  `*Types:* ${LOAN_TYPES.map(t => t.label).join(', ')}\n` +
+  `*Owner:* a user set up in the app — match by name or initials (e.g. K or P)\n` +
+  `*Lender:* optional 4th part\n\n` +
+  `You can use /loan instead of the word "loan". Amounts accept 5L, 50k or 1.2cr.\n\n` +
+  `I'll then ask for the tenure and the interest rate and save the loan.`;
+
+function findLoanType(input: string): LoanTypePreset | undefined {
+  const q = input.trim().toLowerCase();
+  return (
+    LOAN_TYPES.find(t => t.label.toLowerCase() === q) ??
+    LOAN_TYPES.find(t => t.aliases.includes(q)) ??
+    LOAN_TYPES.find(
+      t => t.label.toLowerCase().startsWith(q) || t.aliases.some(a => a.startsWith(q)),
+    )
+  );
+}
+
+/** Exact lookup by label — used when re-rendering a draft that already picked a type. */
+function loanTypeByLabel(label: string): LoanTypePreset {
+  return LOAN_TYPES.find(t => t.label === label) ?? LOAN_TYPES[LOAN_TYPES.length - 1];
+}
+
+/** "50,00,000" → 5000000 · "8L" → 800000 · "1.2cr" → 12000000 · "50k" → 50000 */
+function parseAmount(raw: string): number | null {
+  const cleaned = raw.replace(/[,\s₹]/g, '').toLowerCase();
+  const m = cleaned.match(/^(\d+(?:\.\d+)?)(k|l|lakh|lac|cr|crore)?$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!isFinite(n) || n <= 0) return null;
+  const mult =
+    m[2] === 'k' ? 1e3 :
+    m[2] === 'cr' || m[2] === 'crore' ? 1e7 :
+    m[2] ? 1e5 : 1;
+  return Math.round(n * mult * 100) / 100;
+}
+
+/** Reducing-balance EMI. Falls back to a flat split when the rate is 0. */
+function calcEmi(principal: number, annualRatePct: number, months: number): number {
+  if (months <= 0) return 0;
+  const r = annualRatePct / 12 / 100;
+  if (r === 0) return principal / months;
+  const pow = Math.pow(1 + r, months);
+  return (principal * r * pow) / (pow - 1);
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+/** Match an owner string against the app's users — initials first, then name. */
+function resolveUser(users: FinUser[], raw: string): FinUser | undefined {
+  const q = raw.trim().toLowerCase();
+  return (
+    users.find(u => u.initials.toLowerCase() === q) ??
+    users.find(u => u.name.toLowerCase() === q) ??
+    users.find(u => u.name.toLowerCase().startsWith(q))
+  );
+}
+
+interface ParsedLoan {
+  amount: number;
+  type: LoanTypePreset;
+  ownerRaw: string;
+  lender?: string;
+}
+
+/**
+ * Parse the loan template.
+ *   null          → the text is not a loan command at all
+ *   { error }     → it is a loan command but incomplete / invalid
+ *   ParsedLoan    → good to go (owner still needs resolving against real users)
+ */
+function parseLoanTemplate(text: string): ParsedLoan | { error: string } | null {
+  const trimmed = text.trim();
+  if (!LOAN_PREFIX.test(trimmed)) return null;
+
+  const body = trimmed.replace(LOAN_PREFIX, '').trim();
+  if (!body) return { error: 'usage' };
+
+  const parts = body.split(LOAN_ARROW).map(p => p.trim()).filter(Boolean);
+  if (parts.length < 3) return { error: 'usage' };
+
+  const amount = parseAmount(parts[0]);
+  if (amount === null) {
+    return { error: `I couldn't read the amount "${parts[0]}". Try digits like \`5000000\`, or \`50L\` / \`1.2cr\`.` };
+  }
+
+  const type = findLoanType(parts[1]);
+  if (!type) {
+    return { error: `Unknown loan type "${parts[1]}".\nPick one of: ${LOAN_TYPES.map(t => t.label).join(', ')}.` };
+  }
+
+  return {
+    amount,
+    type,
+    ownerRaw: parts[2],
+    lender: parts.length > 3 ? parts.slice(3).join(' ') : undefined,
+  };
+}
+
+// ── Loan prompt rendering ─────────────────────────────────
+
+function tenurePrompt(p: PendingLoan, stepNo = 1): string {
+  return (
+    `🏦 *New Loan* — step ${stepNo} of 3\n\n` +
+    `💰 Principal: *${fmt(p.principal)}*\n` +
+    `🏷 Type: ${p.typeLabel}\n` +
+    `👤 Owner: ${p.ownerName}\n` +
+    (p.lender ? `🏛 Lender: ${p.lender}\n` : '') +
+    `📅 Disbursed: ${p.disbursedOn}\n\n` +
+    `📆 *Choose the tenure (months):*`
+  );
+}
+
+function tenureButtons(pid: string, type: LoanTypePreset) {
+  const opts = [...new Set([type.tenure, ...TENURE_OPTIONS])].sort((a, b) => a - b);
+  const rows = chunk(opts, 4).map(row =>
+    row.map(m => Markup.button.callback(m === type.tenure ? `${m} mo ⭐` : `${m} mo`, `loan_t:${pid}:${m}`)),
+  );
+  rows.push([Markup.button.callback('❌ Cancel', `loan_no:${pid}`)]);
+  return rows;
+}
+
+function ratePrompt(p: PendingLoan): string {
+  return (
+    `🏦 *New Loan* — step 2 of 3\n\n` +
+    `💰 Principal: *${fmt(p.principal)}*\n` +
+    `🏷 Type: ${p.typeLabel}\n` +
+    `👤 Owner: ${p.ownerName}\n` +
+    `📆 Tenure: ${p.tenureMonths} months\n\n` +
+    `📈 *Choose the interest rate (% per annum):*\n` +
+    `_Or simply type a rate, e.g._ \`8.75\``
+  );
+}
+
+function rateButtons(pid: string, type: LoanTypePreset) {
+  const opts = [...new Set([type.rate, ...RATE_OPTIONS])].sort((a, b) => a - b);
+  const rows = chunk(opts, 4).map(row =>
+    row.map(v => Markup.button.callback(v === type.rate ? `${v}% ⭐` : `${v}%`, `loan_r:${pid}:${v}`)),
+  );
+  rows.push([Markup.button.callback('❌ Cancel', `loan_no:${pid}`)]);
+  return rows;
+}
+
+function confirmPrompt(p: PendingLoan): string {
+  const emi = p.monthlyEmi ?? 0;
+  const months = p.tenureMonths ?? 0;
+  const totalPayable = emi * months;
+  const totalInterest = totalPayable - p.principal;
+  return (
+    `🏦 *New Loan* — step 3 of 3\n\n` +
+    `🏷 ${p.loanName}${p.lender ? ` · ${p.lender}` : ''}\n` +
+    `👤 Owner: ${p.ownerName}\n` +
+    `💰 Principal: *${fmt(p.principal)}*\n` +
+    `📆 Tenure: ${months} months\n` +
+    `📈 Interest: ${p.interestRate}% p.a.\n` +
+    `💵 Monthly EMI: *${fmt(emi)}*\n` +
+    `💸 Total interest: ${fmt(totalInterest)}\n` +
+    `🧾 Total payable: ${fmt(totalPayable)}\n` +
+    `📅 Disbursed: ${p.disbursedOn}\n\n` +
+    `*Save this loan?*`
+  );
+}
+
+function confirmButtons(pid: string) {
+  return [
+    [Markup.button.callback('✅ Confirm', `loan_ok:${pid}`)],
+    [Markup.button.callback('❌ Cancel', `loan_no:${pid}`)],
+  ];
+}
+
+/** Store the chosen rate, compute the EMI, and move the draft to the confirm step. */
+function applyLoanRate(pid: string, rate: number): PendingLoan {
+  const p = loanDrafts.get(pid)!;
+  const emi = calcEmi(p.principal, rate, p.tenureMonths ?? 1);
+  const updated: PendingLoan = {
+    ...p,
+    interestRate: rate,
+    monthlyEmi: Math.round(emi * 100) / 100,
+  };
+  loanDrafts.set(pid, updated);
+  loanStep.set(pid, 'confirm');
+  return updated;
+}
+
+/** The draft this Telegram user is currently working on, if any. */
+function activeLoanDraft(telegramUserId: number): PendingLoan | undefined {
+  for (const draft of loanDrafts.values()) {
+    if (draft.telegramUserId === telegramUserId) return draft;
+  }
+  return undefined;
+}
+
+/** The minimal slice of a Telegraf context the loan flow needs. */
+interface FlowCtx {
+  from: { id: number };
+  chat: { id: number };
+  reply: (text: string, extra?: any) => Promise<unknown>;
+}
+
+/**
+ * Kick off the loan flow from a template message.
+ * Returns false when the text wasn't a loan command at all.
+ */
+async function startLoanFlow(ctx: FlowCtx, text: string): Promise<boolean> {
+  const parsed = parseLoanTemplate(text);
+  if (parsed === null) return false;
+
+  if ('error' in parsed) {
+    await ctx.reply(
+      parsed.error === 'usage' ? LOAN_USAGE : `❌ ${parsed.error}`,
+      { parse_mode: 'Markdown' },
+    );
+    return true;
+  }
+
+  let users: FinUser[] = [];
+  try {
+    users = await api.getUsers();
+  } catch {
+    await ctx.reply('❌ Could not reach the API. Is the server running?');
+    return true;
+  }
+
+  if (users.length === 0) {
+    await ctx.reply('⚠️ No users found. Create users in the web UI first.');
+    return true;
+  }
+
+  const owner = resolveUser(users, parsed.ownerRaw);
+  if (!owner) {
+    await ctx.reply(
+      `❌ I don't know who *${parsed.ownerRaw}* is.\n\n` +
+      `Known users: ${users.map(u => `${u.initials} (${u.name})`).join(', ')}`,
+      { parse_mode: 'Markdown' },
+    );
+    return true;
+  }
+
+  const pid = shortId();
+  const draft: PendingLoan = {
+    id: pid,
+    telegramUserId: ctx.from.id,
+    chatId: ctx.chat.id,
+    principal: parsed.amount,
+    typeKey: parsed.type.label.toLowerCase(),
+    typeLabel: parsed.type.label,
+    loanName: parsed.type.name,
+    ownerId: owner.id,
+    ownerName: owner.name,
+    lender: parsed.lender,
+    disbursedOn: todayIST(),
+    createdAt: Date.now(),
+  };
+  loanDrafts.set(pid, draft);
+  loanStep.set(pid, 'tenure');
+
+  await ctx.reply(tenurePrompt(draft), {
+    parse_mode: 'Markdown',
+    ...Markup.inlineKeyboard(tenureButtons(pid, parsed.type)),
+  });
+  return true;
+}
+
 // ── Bot setup ─────────────────────────────────────────────
 const bot = new Telegraf<Context<Update>>(BOT_TOKEN);
 
@@ -102,30 +426,47 @@ bot.use(async (ctx, next) => {
 bot.start(async ctx => {
   await ctx.reply(
     `👋 *Welcome to Ink Finance Bot!*\n\n` +
-    `📸 Send a photo of a bill, receipt, or UPI payment screenshot.\n` +
-    `🤖 AI will extract merchant, amount, date, and category.\n` +
-    `👤 First pick who is adding the entry (K or P).\n` +
-    `✅ Then pick an account to confirm the transaction.\n\n` +
+    `📸 Send a photo of a bill, receipt, or UPI payment screenshot —\n` +
+    `AI extracts merchant, amount, date and category.\n` +
+    `✍️ Or type it: \`spent 500 groceries at Reliance\`\n` +
+    `🏦 Or add a loan: \`loan 5000000 -> Housing -> Kousi\`\n\n` +
+    `Send /help to see every command.\n\n` +
     `Your Telegram ID: \`${ctx.from.id}\`\n` +
-    `Add this to BOT_ALLOWED_USERS in .env to restrict access.\n\n` +
-    `Commands:\n` +
-    `/setup — create default categories\n` +
-    `/balance — show dashboard summary\n` +
-    `/categories — list all categories`,
+    `Add this to BOT_ALLOWED_USERS in .env to restrict access.`,
     { parse_mode: 'Markdown' },
   );
 });
 
 // ── /help ──────────────────────────────────────────────────
 bot.help(async ctx => {
+  const commandLines = COMMANDS.map(c => `/${c.command} — ${c.description}`).join('\n');
+
   await ctx.reply(
-    `📸 *How to use*\n\n` +
-    `1. Take a photo of your bill/receipt/payment screenshot\n` +
-    `2. Send it to this chat\n` +
-    `3. AI extracts: merchant, amount, date, category\n` +
-    `4. Pick the account to debit/credit\n` +
-    `5. Transaction is created automatically!\n\n` +
-    `Works with: paper receipts, UPI screenshots (PhonePe/GPay/Paytm), bills, invoices`,
+    `🤖 *Ink Finance Bot — help*\n` +
+    `_Everything this bot can do._\n\n` +
+
+    `*⌨️ Commands*\n` +
+    `${commandLines}\n\n` +
+
+    `*📸 Add a transaction from a photo*\n` +
+    `Send any photo of a bill, receipt, or UPI screenshot (PhonePe / GPay / Paytm / BHIM).\n` +
+    `AI reads merchant, amount, date and category, then you pick *who* is adding it (K / P) and *which account* to use.\n\n` +
+
+    `*✍️ Add a transaction by typing*\n` +
+    `\`spent 500 groceries at Reliance\`\n` +
+    `\`received 50000 salary\`\n` +
+    `Verbs: spent · paid · received · got\n\n` +
+
+    `*🏦 Add a loan*\n` +
+    `\`loan <amount> -> <type> -> <owner>\`\n` +
+    `\`loan 5000000 -> Housing -> Kousi\`\n` +
+    `\`loan 8L -> Car -> Preeti -> HDFC Bank\`\n\n` +
+    `• Types: ${LOAN_TYPES.map(t => t.label).join(', ')}\n` +
+    `• Owner: matched against the app's users (name or initials)\n` +
+    `• Lender: optional 4th part\n\n` +
+    `The bot then asks for the *tenure* and the *interest rate*, works out the EMI, and saves the loan.\n\n` +
+
+    `_Tip: amounts accept 5L, 50k and 1.2cr as well as plain numbers._`,
     { parse_mode: 'Markdown' },
   );
 });
@@ -191,6 +532,136 @@ bot.command('categories', async ctx => {
   } catch {
     await ctx.reply('❌ Could not fetch categories.');
   }
+});
+
+// ── /loan ──────────────────────────────────────────────────
+// Same template as the bare-text form:  /loan 5000000 -> Housing -> Kousi
+bot.command('loan', async ctx => {
+  const msg = ctx.message;
+  const text = msg && 'text' in msg ? msg.text : '';
+  const handled = await startLoanFlow(ctx, text);
+  if (!handled) {
+    await ctx.reply(LOAN_USAGE, { parse_mode: 'Markdown' });
+  }
+});
+
+// ── Loan step: tenure chosen ───────────────────────────────
+bot.action(/^loan_t:([^:]+):(\d+)$/, async ctx => {
+  const pid = ctx.match[1];
+  const months = parseInt(ctx.match[2], 10);
+  const p = loanDrafts.get(pid);
+
+  if (!p) {
+    await ctx.answerCbQuery('⏰ Expired — start again with /loan');
+    return;
+  }
+  if (p.telegramUserId !== ctx.from.id) {
+    await ctx.answerCbQuery('⛔ This is not your loan.');
+    return;
+  }
+
+  await ctx.answerCbQuery();
+  const updated: PendingLoan = { ...p, tenureMonths: months };
+  loanDrafts.set(pid, updated);
+  loanStep.set(pid, 'rate');
+
+  try {
+    await ctx.editMessageText(ratePrompt(updated), {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard(rateButtons(pid, loanTypeByLabel(updated.typeLabel))),
+    });
+  } catch { /* message too old to edit — buttons stop working, /loan restarts */ }
+});
+
+// ── Loan step: interest rate chosen ────────────────────────
+bot.action(/^loan_r:([^:]+):([\d.]+)$/, async ctx => {
+  const pid = ctx.match[1];
+  const rate = parseFloat(ctx.match[2]);
+  const p = loanDrafts.get(pid);
+
+  if (!p) {
+    await ctx.answerCbQuery('⏰ Expired — start again with /loan');
+    return;
+  }
+  if (p.telegramUserId !== ctx.from.id) {
+    await ctx.answerCbQuery('⛔ This is not your loan.');
+    return;
+  }
+  if (p.tenureMonths === undefined) {
+    await ctx.answerCbQuery('⚠️ Pick a tenure first.');
+    return;
+  }
+
+  await ctx.answerCbQuery();
+  const updated = applyLoanRate(pid, rate);
+
+  try {
+    await ctx.editMessageText(confirmPrompt(updated), {
+      parse_mode: 'Markdown',
+      ...Markup.inlineKeyboard(confirmButtons(pid)),
+    });
+  } catch { /* message too old to edit */ }
+});
+
+// ── Loan step: confirm & save ──────────────────────────────
+bot.action(/^loan_ok:([^:]+)$/, async ctx => {
+  const pid = ctx.match[1];
+  const p = loanDrafts.get(pid);
+
+  if (!p) {
+    await ctx.answerCbQuery('⏰ Expired — start again with /loan');
+    return;
+  }
+  if (p.telegramUserId !== ctx.from.id) {
+    await ctx.answerCbQuery('⛔ This is not your loan.');
+    return;
+  }
+  if (!p.tenureMonths || !p.interestRate || p.monthlyEmi === undefined) {
+    await ctx.answerCbQuery('⚠️ This loan is incomplete — start again with /loan');
+    return;
+  }
+
+  try {
+    await ctx.answerCbQuery('Saving loan...');
+    const loan = await api.createLoan({
+      name: p.loanName,
+      lender: p.lender,
+      principal: p.principal,
+      interestRate: p.interestRate,
+      tenureMonths: p.tenureMonths,
+      monthlyEmi: p.monthlyEmi,
+      disbursedOn: p.disbursedOn,
+      userId: p.ownerId ?? null,
+    });
+
+    loanDrafts.delete(pid);
+    loanStep.delete(pid);
+
+    await ctx.editMessageText(
+      `✅ *Loan saved!*\n\n` +
+      `🏷 ${loan.name}${p.lender ? ` · ${p.lender}` : ''}\n` +
+      `👤 Owner: ${p.ownerName}\n` +
+      `💰 Principal: ${fmt(p.principal)}\n` +
+      `📆 ${p.tenureMonths} months @ ${p.interestRate}% p.a.\n` +
+      `💵 EMI: ${fmt(p.monthlyEmi)}\n` +
+      `🏦 Outstanding: ${fmt(loan.remainingPrincipal)}\n` +
+      `📅 Disbursed: ${p.disbursedOn}\n\n` +
+      `_See it in the Loans page: ${WEB_URL}_`,
+      { parse_mode: 'Markdown' },
+    );
+  } catch (err) {
+    console.error('[loan] create failed:', err);
+    await ctx.answerCbQuery('❌ Could not save the loan.');
+  }
+});
+
+// ── Loan step: cancel ──────────────────────────────────────
+bot.action(/^loan_no:([^:]+)$/, async ctx => {
+  const pid = ctx.match[1];
+  loanDrafts.delete(pid);
+  loanStep.delete(pid);
+  await ctx.answerCbQuery('Cancelled');
+  await ctx.editMessageText('❌ Loan creation cancelled.');
 });
 
 // ── Photo handler (the main feature) ──────────────────────
@@ -427,6 +898,23 @@ bot.action(/cancel:(.+)/, async ctx => {
 bot.on(message('text'), async ctx => {
   const text = ctx.message.text.trim();
 
+  // ── Mid-flight loan flow: a bare number answers the rate step ──
+  const draft = activeLoanDraft(ctx.from.id);
+  if (draft && loanStep.get(draft.id) === 'rate') {
+    const rate = parseFloat(text.replace('%', '').trim());
+    if (isFinite(rate) && rate >= 0 && rate <= 50) {
+      const updated = applyLoanRate(draft.id, rate);
+      await ctx.reply(confirmPrompt(updated), {
+        parse_mode: 'Markdown',
+        ...Markup.inlineKeyboard(confirmButtons(draft.id)),
+      });
+      return;
+    }
+  }
+
+  // ── Loan template: "loan 5000000 -> Housing -> Kousi" ──
+  if (await startLoanFlow(ctx, text)) return;
+
   // Quick manual entry: "spent 500 groceries at Reliance"
   const match = text.match(
     /^(spent|received|paid|got)\s+(\d+(?:\.\d+)?)\s+(?:for\s+|on\s+|at\s+)?(.+)/i,
@@ -434,7 +922,9 @@ bot.on(message('text'), async ctx => {
   if (!match) {
     await ctx.reply(
       '📸 Send a photo of a bill/receipt to auto-create a transaction.\n\n' +
-      'Or type manually:\n`spent 500 groceries at Reliance`\n`received 50000 salary`',
+      'Or type manually:\n`spent 500 groceries at Reliance`\n`received 50000 salary`\n\n' +
+      'Add a loan:\n`loan 5000000 -> Housing -> Kousi`\n\n' +
+      'Send /help for everything I can do.',
       { parse_mode: 'Markdown' },
     );
     return;
@@ -460,7 +950,7 @@ bot.on(message('text'), async ctx => {
     try {
       await api.createTransaction({
         amount, type,
-        date: new Date().toISOString().slice(0, 10),
+        date: todayIST(),
         description: merchant,
         accountId: accounts[0].id,
         categoryId,
@@ -483,7 +973,7 @@ bot.on(message('text'), async ctx => {
     messageText: text,
     analysis: {
       merchant, amount, type, category,
-      date: new Date().toISOString().slice(0, 10),
+      date: todayIST(),
       confidence: 1,
     },
     categoryId,
@@ -513,6 +1003,12 @@ setInterval(() => {
     if (now - p.createdAt > PENDING_TTL) {
       pending.delete(id);
       pendingStep.delete(id);
+    }
+  }
+  for (const [id, p] of loanDrafts) {
+    if (now - p.createdAt > PENDING_TTL) {
+      loanDrafts.delete(id);
+      loanStep.delete(id);
     }
   }
 }, 60_000);
@@ -554,6 +1050,12 @@ bot.catch((err, ctx) => {
 // deploys (old + new instance overlap while polling getUpdates).
 async function launchWithRetry(attempt = 1): Promise<void> {
   try {
+    // Publish the command list so Telegram's "/" menu shows every command.
+    await bot.telegram
+      .setMyCommands(COMMANDS)
+      .catch(err =>
+        console.warn('⚠️  Could not register the command menu:', err?.message ?? err),
+      );
     await bot.launch();
   } catch (err: any) {
     const isConflict = err?.response?.error_code === 409;

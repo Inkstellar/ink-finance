@@ -77,6 +77,7 @@ model FinUser {
   updatedAt    DateTime          @updatedAt
 
   transactions FinTransaction[]
+  loans        FinLoan[]
 
   @@map("fin_users")
 }
@@ -173,6 +174,8 @@ model FinLoan {
   status          FinLoanStatus    @default(ACTIVE)
   accountId       String?
   account         FinAccount?      @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  userId          String?
+  user            FinUser?         @relation(fields: [userId], references: [id], onDelete: SetNull)
   payments        FinLoanPayment[]
   createdAt       DateTime         @default(now())
   updatedAt       DateTime         @updatedAt

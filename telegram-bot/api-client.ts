@@ -2,7 +2,9 @@ import type {
   FinAccount,
   FinCategory,
   FinUser,
+  FinLoan,
   CreateTransactionPayload,
+  CreateLoanPayload,
 } from './types';
 
 /**
@@ -69,6 +71,16 @@ export class FinanceApiClient {
 
   async getUsers(): Promise<FinUser[]> {
     return this.getJson<FinUser[]>('/api/users');
+  }
+
+  // ── Loans ───────────────────────────────────────────────
+
+  async getLoans(): Promise<FinLoan[]> {
+    return this.getJson<FinLoan[]>('/api/loans');
+  }
+
+  async createLoan(payload: CreateLoanPayload): Promise<FinLoan> {
+    return this.postJson<FinLoan>('/api/loans', payload);
   }
 
   // ── Dashboard ─────────────────────────────────────────────

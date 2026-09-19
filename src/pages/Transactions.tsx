@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useApi } from '../hooks/useApi';
 import { apiPost, apiDelete, apiPut } from '../lib/api';
+import { todayIST } from '../lib/format';
 import {
   Box, Typography, Card, CardContent, Button, Dialog, DialogTitle, DialogContent,
   DialogActions, TextField, MenuItem, Select, FormControl, InputLabel,
@@ -43,7 +44,7 @@ export default function Transactions() {
   const [open, setOpen] = useState(false);
   const [filterUser, setFilterUser] = useState<string>('');
   const [form, setForm] = useState({
-    amount: '', type: 'EXPENSE', date: new Date().toISOString().slice(0, 10),
+    amount: '', type: 'EXPENSE', date: todayIST(),
     description: '', notes: '', accountId: '', categoryId: '', userId: '',
   });
 
@@ -62,7 +63,7 @@ export default function Transactions() {
     });
     setOpen(false);
     setForm({
-      amount: '', type: 'EXPENSE', date: new Date().toISOString().slice(0, 10),
+      amount: '', type: 'EXPENSE', date: todayIST(),
       description: '', notes: '', accountId: '', categoryId: '', userId: '',
     });
     refetch();

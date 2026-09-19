@@ -4,5 +4,6 @@ src
 prisma
 telegram-bot
 .env.local
+.env.render
 railway.toml
 *.md

@@ -222,14 +222,17 @@ app.delete('/api/investments/:id', async (req, res) => {
 
 app.get('/api/loans', async (_req, res) => {
   const loans = await prisma.finLoan.findMany({
-    include: { payments: { orderBy: { paidOn: 'desc' }, take: 5 } },
+    include: {
+      user: true,
+      payments: { orderBy: { paidOn: 'desc' }, take: 5 },
+    },
     orderBy: { disbursedOn: 'asc' },
   });
   res.json(loans);
 });
 
 app.post('/api/loans', async (req, res) => {
-  const { name, lender, principal, interestRate, tenureMonths, monthlyEmi, disbursedOn, endDate, accountId } = req.body;
+  const { name, lender, principal, interestRate, tenureMonths, monthlyEmi, disbursedOn, endDate, accountId, userId } = req.body;
   const loan = await prisma.finLoan.create({
     data: {
       name,
@@ -242,8 +245,9 @@ app.post('/api/loans', async (req, res) => {
       endDate: endDate ? new Date(endDate) : null,
       remainingPrincipal: principal,
       accountId,
+      userId: userId || null,
     },
-    include: { payments: true },
+    include: { user: true, payments: true },
   });
   res.json(loan);
 });
@@ -291,10 +295,23 @@ app.get('/api/dashboard', async (_req, res) => {
   const totalLoanDebt = loans.reduce((sum, l) => sum + l.remainingPrincipal, 0);
   const netWorth = totalBalance + totalInvestmentValue - totalLoanDebt;
 
-  const now = new Date();
+  // "This month" is resolved in IST, not in the server's timezone. Render runs
+  // in UTC, so on the 1st of a month before 05:30 IST the two disagree and the
+  // dashboard would report the *previous* month's income and expenses.
+  // Transaction dates are stored as UTC midnight of the intended calendar day,
+  // so getMonth()/getFullYear() on them are already the IST calendar values.
+  const [istYear, istMonth] = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+  })
+    .format(new Date())
+    .split('-')
+    .map(Number);
+
   const monthTransactions = transactions.filter(t => {
     const d = new Date(t.date);
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+    return d.getMonth() + 1 === istMonth && d.getFullYear() === istYear;
   });
   const monthlyIncome = monthTransactions
     .filter(t => t.type === 'INCOME').reduce((s, t) => s + t.amount, 0);

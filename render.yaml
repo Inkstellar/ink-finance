@@ -30,6 +30,10 @@ services:
         value: production
       - key: API_PORT
         value: 10000
+      # India is the app's only timezone. Render runs UTC by default, which
+      # shifts month buckets and date defaults by 5:30.
+      - key: TZ
+        value: Asia/Kolkata
       - key: DATABASE_URL
         sync: false   # Neon connection string — set in the dashboard
       - key: BOT_TOKEN
@@ -56,6 +60,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: TZ
+        value: Asia/Kolkata
       - key: DATABASE_URL
         sync: false
       - key: BOT_TOKEN

@@ -19,6 +19,29 @@ Personal finance manager for tracking home finances, personal investments, and l
 - **Telegram Bot:** Telegraf + AI vision (OpenAI-compatible API, agnes-2.5-flash with fallback chain)
 - **Charts:** Recharts (ready for integration)
 
+## Money & time (India)
+
+This app is **single-currency and single-timezone** by design: INR and IST
+(`Asia/Kolkata`). No FX, no per-user timezone.
+
+- **Currency** — `fin_accounts.currency` and `fin_investments.currency` both
+  default to `"INR"` in `prisma/schema.prisma`, the API falls back to `INR`, and
+  everything renders through `formatINR` (`en-IN` locale, ₹2,88,806 style
+  grouping). The bot formats with `toLocaleString('en-IN')`.
+- **Timezone** — never derive today's date from `new Date().toISOString()`.
+  That is UTC, so between **00:00 and 05:29 IST it returns yesterday** — a
+  receipt scanned at 1 am was being filed under the previous day. Use
+  `todayIST()` from `src/lib/format.ts` (or `telegram-bot/dates.ts`).
+- **Display** — `formatDate` pins `timeZone: 'Asia/Kolkata'`. Dates are *stored*
+  as UTC midnight of the intended calendar day, so an unpinned formatter shows
+  the previous day on any device west of Greenwich.
+- **Month buckets** — `GET /api/dashboard` resolves "this month" in IST. Render
+  runs in UTC, and on the 1st before 05:30 IST the two disagree, which used to
+  report the previous month's income and expenses.
+- **Env** — `TZ=Asia/Kolkata` is set in `.env*` and `render.yaml` so any new
+  local-time code is IST by default. Correctness no longer *depends* on it (the
+  date helpers specify the timezone explicitly), but keep it consistent.
+
 ## Database
 
 Uses a dedicated `ink_finance` database on the same Neon PostgreSQL project as `puck-nextjs-starter`. This is a separate database, so `prisma db push` is safe — it won't affect the puck project's tables.
@@ -44,6 +67,50 @@ npm run dev             # Start both API server (3456) and Vite dev server (5179
 ```
 
 Open http://localhost:5179
+
+## Develop against the deployed services
+
+You don't have to run the API server locally. The Render deployment can serve
+your local UI instead, so you edit the frontend against **real data** while the
+deployed Telegram bot keeps feeding the same database.
+
+```bash
+npm run render:status          # wake the free-tier services + check they're up
+npm run dev:use-render-server  # Vite dev server only, pointed at the Render API
+```
+
+Open http://localhost:5179. Nothing is proxied — the browser calls
+`https://ink-finance-api.onrender.com` directly (the API has CORS enabled).
+
+| Command | Runs locally | API it talks to |
+|---------|--------------|-----------------|
+| `npm run dev` | API + web | local (`localhost:3456`) |
+| `npm run dev:all` | API + web + bot | local |
+| `npm run dev:use-render-server` | web only | **Render API** |
+| `npm run dev:use-render-server:with-bot` | web + bot | **Render API** |
+| `npm run render:status` | nothing | pings all three Render services |
+
+How it's wired:
+
+- **`.env.render`** — the profile: the three deployed URLs, no secrets, committed.
+- **`scripts/run-with-env.mjs`** — loads env files left-to-right, **last wins**,
+  so `.env.local` (secrets) sits underneath `.env.render` (URLs).
+- **`vite --mode render`** — Vite loads `.env.render` after `.env.local`, so its
+  `VITE_API_URL` overrides the localhost one.
+
+Gotchas:
+
+- **Free-tier cold starts.** The API and bot web services sleep after ~15 min
+  with no traffic; the first request can take 30–60s. Run `npm run render:status`
+  first so the browser doesn't eat that delay.
+- **Don't run the bot locally while the Render bot is up.** Telegram allows only
+  one `getUpdates` poller per token — a second one gets `409 Conflict` and both
+  instances start erroring. `dev:use-render-server` therefore starts the **web
+  only** and lets Render's bot handle Telegram. Use `...:with-bot` only when you
+  are debugging the bot itself, and suspend the Render bot first.
+- **Writes are real.** The Render API uses the real Neon `ink_finance` database,
+  so anything you add in local dev lands in your actual data.
+- `strictPort: true` means port 5179 must be free.
 
 ## Telegram Bot
 
@@ -118,7 +185,11 @@ ink-finance/
 │   ├── App.tsx              # Router + layout
 │   ├── main.tsx             # Entry point
 │   └── theme.ts             # MUI theme
-├── .env.local               # Database URL (same as puck project)
+├── scripts/
+│   ├── run-with-env.mjs     # run a command with layered .env files
+│   └── render-status.mjs    # ping the deployed Render services
+├── .env.local               # Secrets + local URLs (gitignored)
+├── .env.render              # Render profile: deployed URLs only (committed)
 ├── .gitignore
 ├── package.json
 ├── vite.config.ts

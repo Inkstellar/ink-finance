@@ -39,6 +39,7 @@ Environment variables:
 ```
 NODE_ENV=production
 API_PORT=10000
+TZ=Asia/Kolkata
 DATABASE_URL=<Neon connection string>
 BOT_TOKEN=<from .env.local>
 AI_API_KEY=<from .env.local>
@@ -57,6 +58,7 @@ AI_MODEL=agnes-2.5-flash
 Environment variables:
 ```
 NODE_ENV=production
+TZ=Asia/Kolkata
 DATABASE_URL=<Neon connection string>
 BOT_TOKEN=<from .env.local>
 AI_API_KEY=<from .env.local>
@@ -149,6 +151,31 @@ server never typechecks — so these went unnoticed until the first production b
 **Takeaway:** run `npm run build` locally before deploying; the dev server hides
 type errors.
 
+### 6. Render runs in UTC — the app thinks in IST
+
+This is a single-timezone app (India), and the container is UTC. Two things
+broke because of the 5:30 offset:
+
+- `new Date().toISOString().slice(0, 10)` — used to pre-fill dates in the
+  transaction/loan forms and the bot — is **UTC**, so any entry made between
+  00:00 and 05:29 IST was dated the *previous* day. A receipt scanned at 1 am
+  landed in yesterday's ledger. Fixed with `todayIST()`
+  (`src/lib/format.ts`, `telegram-bot/dates.ts`), which formats `en-CA` in
+  `Asia/Kolkata` to get `YYYY-MM-DD`.
+- `GET /api/dashboard` decided "this month" from `new Date().getMonth()`. On the
+  1st of a month before 05:30 IST the container still thought it was last month,
+  so income/expenses briefly showed the wrong month. It now resolves the month in
+  `Asia/Kolkata` explicitly.
+
+`TZ=Asia/Kolkata` was added to both services' env vars (and to `render.yaml`)
+so *future* local-time code is IST by default. Correctness does not depend on it
+any more — the helpers name the timezone — so a service that hasn't picked up the
+variable yet is not broken. Verified by running the formatters under
+`TZ=America/New_York` and getting the right date anyway.
+
+> The static site doesn't need `TZ`: it only affects the build, and the browser
+> decides how dates render. `formatDate` pins IST so that's deterministic too.
+
 ---
 
 ## ⚠️ Free-tier spin-down (important)
@@ -196,6 +223,62 @@ render logs --resources srv-dan70g6gekts73fufon0 --output text | tail -30
 
 ---
 
+## Local dev against the deployed stack
+
+Once the services are live you usually don't need a local API server — point the
+local Vite dev server at the deployed one and work against real data.
+
+```bash
+npm run render:status          # wake the (free-tier) services + health check
+npm run dev:use-render-server  # Vite on :5179, browser -> https://ink-finance-api.onrender.com
+```
+
+| Command | Runs locally | API it talks to |
+|---------|--------------|-----------------|
+| `npm run dev` | API + web | local (`:3456`) |
+| `npm run dev:all` | API + web + bot | local |
+| `npm run dev:use-render-server` | web only | **Render API** |
+| `npm run dev:use-render-server:with-bot` | web + bot | **Render API** |
+| `npm run render:status` | nothing | pings api / bot / web |
+
+Wiring:
+
+- **`.env.render`** — committed profile holding only the three public URLs
+  (`VITE_API_URL`, `WEB_URL`, `BOT_URL`). No secrets.
+- **`scripts/run-with-env.mjs`** — loads env files left-to-right with **last
+  file wins**, so `.env.local` (BOT_TOKEN, AI_API_KEY) sits underneath
+  `.env.render` (URLs). Prints the effective config with secrets masked.
+- **`vite --mode render`** — Vite's own precedence loads `.env.render` after
+  `.env` / `.env.local`, so the deployed URL wins. Verified: `MODE=render`,
+  `PROD=false` (still a dev build).
+
+### Why `dev:use-render-server` does not start the bot
+
+Telegram permits exactly **one** `getUpdates` poller per bot token. The deployed
+bot on Render is already polling, so a second local poller provokes
+`409 Conflict` on both sides — the local one retries 10× and exits, and the
+deployed one can crash out of its polling loop. The default command therefore
+runs the web only and leaves Telegram to Render.
+
+`dev:use-render-server:with-bot` exists for debugging the bot itself: suspend the
+Render bot first (Dashboard → the service → Suspend), then run it.
+
+### Free-tier cold starts
+
+`npm run render:status` doubles as a wake-up call. Observed on a real run:
+
+```
+✅ api 200  32856ms  ⏱️  cold start (instance was suspended)
+✅ bot 200  41835ms  ⏱️  cold start (instance was suspended)
+✅ web 200  478ms
+```
+
+The `startedAt` field in the bot's health payload is a reliable tell — if it is
+only seconds old, the request you just made is what woke the instance. Static
+sites never sleep, which is why `web` responds instantly.
+
+---
+
 ## 🔐 Security note
 
 `BOT_TOKEN`, `DATABASE_URL`, and `AI_API_KEY` are stored **only** as Render
@@ -205,3 +288,8 @@ into `DEPLOY_RENDER.md`; that file now uses placeholders.
 Because the token was exposed in git history and via GitHub secret scanning,
 **rotate the Telegram bot token** via @BotFather (`/revoke`) and update the env
 var on both Render services.
+
+`.env.render` is committed **on purpose** — it holds only public service URLs.
+Anything secret stays in `.env` / `.env.local`, which `.gitignore` covers via
+`.env`, `.env.local`, and `.env*.local` (so private overrides like
+`.env.render.local` are ignored automatically).

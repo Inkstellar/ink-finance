@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type { ReceiptAnalysis } from './types';
+import { todayIST } from './dates';
 
 const apiKey = process.env.AI_API_KEY!;
 const baseURL = process.env.AI_BASE_URL!;
@@ -127,7 +128,7 @@ For UPI screenshots (PhonePe, GPay, Paytm, BHIM):
   return {
     merchant:  parsed.merchant?.trim() || 'Unknown',
     amount:    parseFloat(parsed.amount) || 0,
-    date:      parsed.date || new Date().toISOString().slice(0, 10),
+    date:      parsed.date || todayIST(),
     category:  parsed.category?.trim() || 'Other',
     type:      parsed.type === 'INCOME' ? 'INCOME' : 'EXPENSE',
     paymentMethod: parsed.paymentMethod?.trim() || undefined,

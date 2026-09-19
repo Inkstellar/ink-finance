@@ -9,7 +9,7 @@ import {
 import AddIcon from '@mui/icons-material/Add';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
-import { formatINR, formatINRDecimal, formatDate, formatPercent } from '../lib/format';
+import { formatINR, formatINRDecimal, formatDate, formatPercent, todayIST } from '../lib/format';
 import StatCard from '../components/StatCard';
 import HomeWorkIcon from '@mui/icons-material/HomeWork';
 
@@ -27,7 +27,7 @@ function LoanRow({ loan }: { loan: Loan }) {
   const [open, setOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
   const [payForm, setPayForm] = useState({
-    amount: String(loan.monthlyEmi), principal: '', interest: '', balance: '', paidOn: new Date().toISOString().slice(0, 10),
+    amount: String(loan.monthlyEmi), principal: '', interest: '', balance: '', paidOn: todayIST(),
   });
 
   const handlePayment = async () => {
@@ -162,7 +162,7 @@ export default function Loans() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState({
     name: '', lender: '', principal: '', interestRate: '', tenureMonths: '',
-    monthlyEmi: '', disbursedOn: new Date().toISOString().slice(0, 10),
+    monthlyEmi: '', disbursedOn: todayIST(),
   });
 
   const allLoans = loans || [];
@@ -179,7 +179,7 @@ export default function Loans() {
       monthlyEmi: parseFloat(form.monthlyEmi),
     });
     setOpen(false);
-    setForm({ name: '', lender: '', principal: '', interestRate: '', tenureMonths: '', monthlyEmi: '', disbursedOn: new Date().toISOString().slice(0, 10) });
+    setForm({ name: '', lender: '', principal: '', interestRate: '', tenureMonths: '', monthlyEmi: '', disbursedOn: todayIST() });
     refetch();
   };
 
