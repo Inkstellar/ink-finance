@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
+    "db:seed": "prisma db execute --file prisma/seed.sql",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio"
   },
