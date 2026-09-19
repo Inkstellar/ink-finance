@@ -19,7 +19,9 @@ Personal finance manager for tracking home finances, personal investments, and l
 
 ## Database
 
-Uses the same Neon PostgreSQL instance as `puck-nextjs-starter`. All tables are prefixed with `fin_` to avoid conflicts:
+Uses a dedicated `ink_finance` database on the same Neon PostgreSQL project as `puck-nextjs-starter`. This is a separate database, so `prisma db push` is safe — it won't affect the puck project's tables.
+
+Tables (all prefixed with `fin_`):
 
 - `fin_accounts` — Bank accounts, cash, credit cards, investment accounts
 - `fin_categories` — Income/expense/transfer categories with hierarchical parent support
