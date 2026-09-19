@@ -1,0 +1,31 @@
+name: Keep Render services awake
+
+# Render's free tier suspends a web service after ~15 minutes without inbound
+# HTTP traffic. The Telegram bot only makes *outbound* calls, so it would be
+# suspended and stop answering messages. This workflow pings both services so
+# they stay running.
+#
+# Notes:
+#   - GitHub may delay scheduled runs under load, and disables schedules in
+#     repos with no activity for 60 days.
+#   - For a hard guarantee, pair this with a monitor like UptimeRobot, or
+#     upgrade the services to a paid plan.
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'   # every 10 minutes
+  workflow_dispatch:          # allow manual runs
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping API health endpoint
+        run: |
+          curl -fsS --max-time 60 --retry 2 --retry-delay 10 \
+            https://ink-finance-api.onrender.com/api/health || true
+
+      - name: Ping bot health endpoint
+        run: |
+          curl -fsS --max-time 60 --retry 2 --retry-delay 10 \
+            https://ink-finance-bot.onrender.com/health || true
