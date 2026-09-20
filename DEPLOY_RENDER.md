@@ -217,6 +217,15 @@ is safe on a static site. Verified that the generated client then contains
 *all three* services, not just the api — a green api deploy does not mean the
 static site built.
 
+### 8. `matrix` is not available in a job-level `if`
+
+The deploy workflow filters services on manual runs with
+`inputs.service == 'all' || inputs.service == matrix.key`. Put that condition on
+the **job** and the whole workflow file is invalid: every run dies in 0s with
+*"This run likely failed because of a workflow file issue"* and no job logs to
+read. The `matrix` context only exists at **step** level, so the condition has to
+be repeated on each step. (Contrast `jobs.<id>.name`, where `matrix` *is* fine.)
+
 ---
 
 ## ⚠️ Free-tier spin-down (important)
@@ -247,7 +256,33 @@ our first request, not the deploy time — proof it had been suspended.
 
 ## Redeploying
 
-Auto-deploy is enabled — pushing to `main` on GitHub triggers a build.
+**Just push.** `.github/workflows/deploy.yml` deploys all three services on every
+push to `main`, waits for each deploy to report `live`, then health-checks the
+deployed URL. Watch it with `gh run list --repo Inkstellar/ink-finance`, or in
+the Actions tab.
+
+> **Why not Render's own Auto-Deploy toggle?** It *is* on for all three services
+> (`autoDeploy: "yes"`, `branch: "main"`) — but it can never fire. The services
+> are connected as a **public Git repository**: `GET /v1/services/{id}` returns
+> `repo` as a bare URL string with **no repo `id`**, and a public-repo connection
+> has no push webhook attached, so nothing tells Render about the push. That is
+> why every deploy before 2026-09-20 carries `trigger: api` (started by hand)
+> instead of `trigger: git`. Native auto-deploy would need each service
+> reconnected through the **Render GitHub App** in the dashboard; the Actions
+> workflow achieves the same thing without that step.
+
+Requires one repository secret (Render → Account Settings → API Keys):
+
+```bash
+gh secret set RENDER_API_KEY --repo Inkstellar/ink-finance
+```
+
+Manual run: Actions → **Deploy to Render** → *Run workflow* → pick
+`all` / `web` / `api` / `bot`, and tick **clear the build cache** when
+dependencies changed (stale `@prisma/client` — see lesson 7).
+
+There is deliberately **no path filtering**: any push redeploys all three. It is
+cheap here and avoids the "changed X, forgot to deploy X" failure mode.
 
 Manual deploy via Render CLI:
 ```bash
