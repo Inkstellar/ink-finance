@@ -1,0 +1,136 @@
+name: Deploy to Render
+
+# Why this exists instead of Render's own "Auto-Deploy" toggle:
+#
+# The three services are connected to Render as a *public Git repository*
+# (the API reports `repo` as a bare URL string with no repo id), and a
+# public-repo connection has no push webhook attached. So `autoDeploy: yes`
+# has nothing to listen to — every deploy in the service history has
+# `trigger: api`, i.e. it was started by a hand-made API call.
+#
+# This workflow makes that API call for us on every push to main, and then
+# waits for each deploy to actually go live and health-checks the result.
+#
+# Requires one repository secret: RENDER_API_KEY (Render → Account Settings
+# → API Keys).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: Which service(s) to deploy
+        type: choice
+        options: [all, web, api, bot]
+        default: all
+      clear_cache:
+        description: Clear the build cache (use after dependency changes)
+        type: boolean
+        default: false
+
+# Deploys are ordered and never cancelled half-way: a superseded run would
+# otherwise leave a service building an older commit.
+concurrency:
+  group: render-deploy
+  cancel-in-progress: false
+
+env:
+  RENDER_API: https://api.render.com/v1
+
+jobs:
+  deploy:
+    name: deploy ${{ matrix.key }}
+    runs-on: ubuntu-latest
+    # On manual runs, only deploy the requested service (job-level `if` sees
+    # the matrix because it is evaluated after the matrix expands).
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.key }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: web
+            id: srv-dan8f7rm8hqs73ae5dt0
+            health: https://ink-finance-web.onrender.com/transactions
+          - key: api
+            id: srv-dan708jm8hqs73a9eimg
+            health: https://ink-finance-api.onrender.com/api/health
+          - key: bot
+            id: srv-dan70g6gekts73fufon0
+            health: https://ink-finance-bot.onrender.com/health
+
+    steps:
+      - name: Trigger deploy
+        id: trigger
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${RENDER_API_KEY:-}" ]; then
+            echo "::error::RENDER_API_KEY secret is not set on this repository."
+            exit 1
+          fi
+
+          # Prefer clearing the cache only when explicitly asked for.
+          CLEAR="do_not_clear"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.clear_cache }}" = "true" ]; then
+            CLEAR="clear"
+          fi
+
+          response=$(curl -fsS -X POST "$RENDER_API/services/${{ matrix.id }}/deploys" \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "{\"clearCache\":\"$CLEAR\"}")
+
+          deploy_id=$(echo "$response" | jq -r '.id')
+          commit=$(echo "$response" | jq -r '.commit.id // "unknown"')
+
+          echo "deploy_id=$deploy_id" >> "$GITHUB_OUTPUT"
+          echo "Triggered ${{ matrix.key }} deploy $deploy_id (cache: $CLEAR, commit: ${commit:0:7})"
+          echo "### ${{ matrix.key }} — deploy \`${deploy_id}\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for deploy to go live
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+        run: |
+          set -euo pipefail
+          deploy_id="${{ steps.trigger.outputs.deploy_id }}"
+
+          # Render builds the api/bot from source on the free tier, so allow
+          # a generous window before calling it a failure.
+          for attempt in $(seq 1 40); do
+            status=$(curl -fsS "$RENDER_API/services/${{ matrix.id }}/deploys/$deploy_id" \
+              -H "Authorization: Bearer $RENDER_API_KEY" | jq -r '.status')
+
+            case "$status" in
+              live)
+                echo "${{ matrix.key }} is live (after ${attempt} checks)."
+                echo "- ✅ went live" >> "$GITHUB_STEP_SUMMARY"
+                exit 0
+                ;;
+              build_failed | update_failed | canceled | deactivated)
+                echo "::error::${{ matrix.key }} deploy $status"
+                echo "- ❌ $status" >> "$GITHUB_STEP_SUMMARY"
+                exit 1
+                ;;
+            esac
+
+            echo "  attempt $attempt/40 — status: $status"
+            sleep 30
+          done
+
+          echo "::error::${{ matrix.key }} deploy did not go live within 20 minutes"
+          echo "- ❌ timed out waiting for live" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Health-check the deployed service
+        run: |
+          set -euo pipefail
+          # Free-tier services cold-start, so retry with a long timeout before
+          # declaring the deploy bad.
+          curl -fsS --max-time 90 --retry 4 --retry-delay 15 --retry-all-errors \
+            "${{ matrix.health }}" > /dev/null
+          echo "${{ matrix.key }} responded OK at ${{ matrix.health }}"
+          echo "- ✅ health check passed" >> "$GITHUB_STEP_SUMMARY"
