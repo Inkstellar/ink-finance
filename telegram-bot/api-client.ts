@@ -10,12 +10,25 @@ import type {
 /**
  * Thin wrapper around the ink-finance REST API (port 3456).
  * Uses native fetch (Node 18+).
+ *
+ * The API requires authentication. A bot has no browser and no session
+ * cookie, so it authenticates server-to-server with the shared
+ * SERVICE_TOKEN secret instead.
  */
 export class FinanceApiClient {
   constructor(private baseUrl: string) {}
 
+  /** Headers every request needs, including the service credential. */
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    const serviceToken = process.env.SERVICE_TOKEN;
+    return {
+      ...(serviceToken ? { 'X-Service-Token': serviceToken } : {}),
+      ...extra,
+    };
+  }
+
   private async getJson<T>(path: string): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`);
+    const res = await fetch(`${this.baseUrl}${path}`, { headers: this.headers() });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
     return res.json() as Promise<T>;
   }
@@ -23,7 +36,7 @@ export class FinanceApiClient {
   private async postJson<T>(path: string, body: unknown): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);

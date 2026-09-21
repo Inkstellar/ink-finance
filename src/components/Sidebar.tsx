@@ -1,4 +1,4 @@
-import { Drawer, List, ListItemButton, ListItemIcon, ListItemText, Toolbar, Box, Typography, Divider } from '@mui/material';
+import { Drawer, List, ListItemButton, ListItemIcon, ListItemText, Toolbar, Box, Typography, Divider, Avatar, Button, Stack } from '@mui/material';
 import { Link, useLocation } from 'react-router-dom';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import ReceiptIcon from '@mui/icons-material/Receipt';
@@ -6,6 +6,8 @@ import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import BudgetIcon from '@mui/icons-material/PieChart';
 import PeopleIcon from '@mui/icons-material/People';
+import LogoutIcon from '@mui/icons-material/Logout';
+import { signOut, type SessionUser } from '../lib/auth';
 
 const drawerWidth = 240;
 
@@ -18,7 +20,7 @@ const navItems = [
   { label: 'Users', path: '/users', icon: <PeopleIcon /> },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({ user }: { user?: SessionUser }) {
   const location = useLocation();
 
   return (
@@ -63,6 +65,36 @@ export default function Sidebar() {
         })}
       </List>
       <Box sx={{ mt: 'auto', p: 2 }}>
+        {user && (
+          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 1.5 }}>
+            <Avatar
+              sx={{
+                width: 32, height: 32, fontSize: 13, fontWeight: 700,
+                bgcolor: user.image || 'primary.main',
+              }}
+            >
+              {user.initials || (user.name ?? 'U').slice(0, 1).toUpperCase()}
+            </Avatar>
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant="body2" fontWeight={600} noWrap>
+                {user.name}
+              </Typography>
+              <Typography variant="caption" color="text.secondary" noWrap display="block">
+                {user.email}
+              </Typography>
+            </Box>
+          </Stack>
+        )}
+        <Button
+          size="small"
+          fullWidth
+          color="inherit"
+          startIcon={<LogoutIcon fontSize="small" />}
+          onClick={() => signOut()}
+          sx={{ justifyContent: 'flex-start', mb: 1 }}
+        >
+          Sign out
+        </Button>
         <Typography variant="caption" color="text.secondary">
           v0.1.0 · Personal Finance
         </Typography>

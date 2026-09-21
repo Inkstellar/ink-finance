@@ -355,6 +355,62 @@ sites never sleep, which is why `web` responds instantly.
 
 ---
 
+## Authentication
+
+Every `/api` route now needs a session, except `/api/health` (the keepalive
+Action pings it) and `/api/auth/*` (you have to be able to sign in). Three pieces
+make that work in production:
+
+**1. `/api` is proxied through the static site.** A rewrite rule
+`/api/*` → `https://ink-finance-api.onrender.com/api/*`, placed **above** the
+SPA fallback (`/*` → `/index.html`) because rules apply top-down. This is
+required, not tidiness: `onrender.com` is on the **Public Suffix List**, so
+`ink-finance-web.onrender.com` and `ink-finance-api.onrender.com` are different
+**sites**, and an API-set cookie would be a third-party cookie that Safari drops
+silently. Same-origin also removes the need for CORS on normal traffic.
+
+```bash
+# Apply the routes (order matters; /api/* must be first)
+API_KEY=$(grep 'key: rnd_' ~/.render/cli.yaml | awk '{print $2}')
+curl -s -X PUT "https://api.render.com/v1/services/srv-dan8f7rm8hqs73ae5dt0/routes" \
+  -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
+  -d '[{"type":"rewrite","source":"/api/*","destination":"https://ink-finance-api.onrender.com/api/*"},
+       {"type":"rewrite","source":"/*","destination":"/index.html"}]'
+```
+
+**2. New environment variables.** On `ink-finance-api`: `AUTH_SECRET`,
+`AUTH_TRUST_HOST=true`, `SERVICE_TOKEN`, `ALLOWED_ORIGINS`. On `ink-finance-bot`:
+`SERVICE_TOKEN` (**same value**). The SPA no longer needs `VITE_API_URL` — it
+calls a relative `/api`. `server/index.ts` sets `app.set('trust proxy', true)` so
+Auth.js sees the forwarded HTTPS scheme and may set a `Secure` cookie.
+
+```bash
+openssl rand -hex 32   # AUTH_SECRET   (rotating this signs everyone out)
+openssl rand -hex 32   # SERVICE_TOKEN (same value on api + bot)
+```
+
+**3. The bot authenticates with `X-Service-Token`.** It has no browser and no
+cookie; `server/auth-middleware.ts` accepts the shared secret with a
+timing-safe comparison. Without it, the bot's every API call returns 401.
+
+Set a first login with `npm run user:set-password` (it hashes with bcrypt and
+never echoes the password). Pointing that script at production writes to the real
+database — it reads `DATABASE_URL` from `.env`, so be sure which one you mean.
+
+Post-deploy verification:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://ink-finance-api.onrender.com/api/transactions  # 401
+curl -s -o /dev/null -w '%{http_code}\n' https://ink-finance-api.onrender.com/api/health        # 200
+curl -s -o /dev/null -w '%{http_code}\n' https://ink-finance-web.onrender.com/api/health        # 200 (proxy works)
+```
+
+Then load the web app: it should show the login screen, and signing in should
+reach the dashboard. `npm run test:auth` with `API_BASE` set to the deployed API
+exercises the whole flow (it creates and deletes a throwaway user).
+
+---
+
 ## 🔐 Security note
 
 `BOT_TOKEN`, `DATABASE_URL`, and `AI_API_KEY` are stored **only** as Render

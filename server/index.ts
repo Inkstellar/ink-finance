@@ -1,13 +1,50 @@
+// Must be the first import: server/auth.ts reads AUTH_SECRET and SERVICE_TOKEN
+// at module scope, and ESM evaluates imports in source order.
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { PrismaClient } from '@prisma/client';
+import { ExpressAuth } from '@auth/express';
+import { authConfig } from './auth.js';
+import { requireApiAuth } from './auth-middleware.js';
 
 const prisma = new PrismaClient();
 const app = express();
 const PORT = parseInt(process.env.API_PORT || process.env.PORT || '3456', 10);
 
-app.use(cors());
+// Render terminates TLS in front of the service, so honour
+// X-Forwarded-Proto — Auth.js uses req.protocol to decide whether it may set
+// a `Secure` cookie.
+app.set('trust proxy', true);
+
+// The SPA talks to this API same-origin (Vite proxy locally, a static-site
+// rewrite in production), so CORS is not needed for normal operation. It is
+// kept as a narrow allow-list rather than the previous wide-open `cors()`,
+// since the API now carries credentials.
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ?? 'http://localhost:5179')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // No Origin header: curl, the bot, and same-origin requests.
+      if (!origin) return callback(null, true);
+      callback(null, ALLOWED_ORIGINS.includes(origin));
+    },
+    credentials: true,
+  }),
+);
 app.use(express.json());
+
+// ─── Auth.js ────────────────────────────────────────────────
+// Mounted BEFORE the gate: signing in must not require being signed in.
+// Must come after express.json(), whose parsed body Auth.js re-encodes.
+app.use('/api/auth/*', ExpressAuth(authConfig));
+
+// ─── Everything below requires a session or the service token ───
+app.use('/api', requireApiAuth);
 
 // ─── Health ─────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {

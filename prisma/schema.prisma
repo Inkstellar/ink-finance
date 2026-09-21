@@ -72,6 +72,12 @@ model FinUser {
   name         String
   initials     String            @default("U")
   color        String            @default("#7c3aed")
+  // ── Auth (Auth.js Credentials provider) ──────────────────
+  // Both nullable: seeded users and bot-created users predate login, and a
+  // user must be able to exist without a password. A user with no
+  // passwordHash simply cannot sign in.
+  email        String?           @unique
+  passwordHash String?
   telegramId   String?           @unique // link to Telegram account
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt

@@ -36,6 +36,19 @@ services:
         value: Asia/Kolkata
       - key: DATABASE_URL
         sync: false   # Neon connection string — set in the dashboard
+      # Auth.js session signing key. Rotating it signs everyone out.
+      - key: AUTH_SECRET
+        sync: false
+      - key: AUTH_TRUST_HOST
+        value: 'true'
+      # Shared with the bot service: its credential instead of a session cookie.
+      - key: SERVICE_TOKEN
+        sync: false
+      # The SPA reaches the API through the static site's /api rewrite, so it
+      # is same-origin. This allow-list only matters for direct cross-origin
+      # callers (e.g. the Vite dev server).
+      - key: ALLOWED_ORIGINS
+        sync: false
       - key: BOT_TOKEN
         sync: false
       - key: AI_API_KEY
@@ -75,6 +88,10 @@ services:
       # Required: the bot cannot reach localhost — point it at the API service.
       - key: VITE_API_URL
         value: https://ink-finance-api.onrender.com
+      # Must match the api service. The bot has no browser session, so it
+      # authenticates to the API with this shared secret.
+      - key: SERVICE_TOKEN
+        sync: false
       - key: BOT_ALLOWED_USERS
         sync: false
 
@@ -86,15 +103,27 @@ services:
     repo: https://github.com/Inkstellar/ink-finance
     buildCommand: npm install --include=dev && npm run build
     staticPublishPath: dist
-    # SPA fallback so deep links (/transactions, /users, …) don't 404.
+    # Route order is significant: rules are applied top-down.
+    #
+    # /api/* is proxied to the API service so the browser only ever talks to
+    # the origin that served the page. That is what keeps the Auth.js session
+    # cookie first-party — onrender.com is on the Public Suffix List, so
+    # calling the API directly would be a cross-site, third-party cookie that
+    # Safari silently drops. It also removes the need for CORS.
+    #
     # Equivalent to:
     #   curl -X PUT https://api.render.com/v1/services/<id>/routes \
-    #     -d '[{"type":"rewrite","source":"/*","destination":"/index.html"}]'
+    #     -d '[{"type":"rewrite","source":"/api/*","destination":"https://ink-finance-api.onrender.com/api/*"},
+    #          {"type":"rewrite","source":"/*","destination":"/index.html"}]'
     routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://ink-finance-api.onrender.com/api/*
+      # SPA fallback so deep links (/transactions, /users, …) don't 404.
       - type: rewrite
         source: /*
         destination: /index.html
-    envVars:
-      # Vite inlines VITE_* vars at BUILD time — host root, no /api suffix.
-      - key: VITE_API_URL
-        value: https://ink-finance-api.onrender.com
+
+    # No envVars: VITE_* vars are inlined at build time, and the SPA ships with
+    # no API host at all — it calls a relative /api, which the /api rewrite
+    # above turns into a same-origin (first-party cookie) request.
