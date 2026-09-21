@@ -133,6 +133,31 @@ function shapeUser<T extends { passwordHash?: string | null; avatarMime?: string
   return { ...rest, hasPassword: Boolean(passwordHash), hasAvatar: Boolean(avatarMime) };
 }
 
+/**
+ * Prisma select for a user embedded in another resource (a transaction, a loan,
+ * the dashboard).
+ *
+ * Always use this instead of `include: { user: true }`. A bare `include` returns
+ * **every** column of the related row, which quietly shipped `passwordHash`
+ * (bcrypt hashes of both users) and the full base64 avatar in every transaction
+ * and loan — tens of kilobytes of image per row, and a credential leak.
+ */
+const EMBEDDED_USER_SELECT = {
+  id: true,
+  name: true,
+  initials: true,
+  color: true,
+  avatarMime: true,
+  updatedAt: true,
+} as const;
+
+/** Swaps the embedded user's `avatarMime` for a `hasAvatar` boolean. */
+function withPublicUser<T extends { user?: { avatarMime?: string | null } | null }>(row: T) {
+  if (!row.user) return row;
+  const { avatarMime, ...user } = row.user;
+  return { ...row, user: { ...user, hasAvatar: Boolean(avatarMime) } };
+}
+
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Image types accepted for an avatar, and the decoded-size ceiling. */
@@ -417,12 +442,12 @@ app.get('/api/transactions', async (req, res) => {
       ...(userId && { userId: String(userId) }),
       ...(dateFilter && { date: dateFilter }),
     },
-    include: { account: true, category: true, user: true },
+    include: { account: true, category: true, user: { select: EMBEDDED_USER_SELECT } },
     orderBy: { date: 'desc' },
     ...(limit && { take: parseInt(String(limit)) }),
     ...(offset && { skip: parseInt(String(offset)) }),
   });
-  res.json(transactions);
+  res.json(transactions.map(withPublicUser));
 });
 
 app.post('/api/transactions', async (req, res) => {
@@ -445,7 +470,7 @@ app.post('/api/transactions', async (req, res) => {
       categoryId,
       toAccountId,
     },
-    include: { account: true, category: true, user: true },
+    include: { account: true, category: true, user: { select: EMBEDDED_USER_SELECT } },
   });
 
   // Apply the balance effects. A transfer moves money between two accounts and
@@ -474,7 +499,7 @@ app.post('/api/transactions', async (req, res) => {
     });
   }
 
-  res.json(tx);
+  res.json(withPublicUser(tx));
 });
 
 app.delete('/api/transactions/:id', async (req, res) => {
@@ -546,14 +571,14 @@ app.delete('/api/investments/:id', async (req, res) => {
 app.get('/api/loans', async (_req, res) => {
   const loans = await prisma.finLoan.findMany({
     include: {
-      user: true,
+      user: { select: EMBEDDED_USER_SELECT },
       // All payments, not a sample: the page shows a payment history and lets
       // you remove a mis-entered one, which needs the full list.
       payments: { orderBy: { paidOn: 'desc' } },
     },
     orderBy: { disbursedOn: 'asc' },
   });
-  res.json(loans);
+  res.json(loans.map(withPublicUser));
 });
 
 app.post('/api/loans', async (req, res) => {
@@ -572,9 +597,9 @@ app.post('/api/loans', async (req, res) => {
       accountId,
       userId: userId || null,
     },
-    include: { user: true, payments: true },
+    include: { user: { select: EMBEDDED_USER_SELECT }, payments: true },
   });
-  res.json(loan);
+  res.json(withPublicUser(loan));
 });
 
 app.post('/api/loans/:id/payment', async (req, res) => {
@@ -617,9 +642,9 @@ app.put('/api/loans/:id', async (req, res) => {
       ...(accountId !== undefined ? { accountId: accountId || null } : {}),
       ...(userId !== undefined ? { userId: userId || null } : {}),
     },
-    include: { user: true, payments: { orderBy: { paidOn: 'desc' } } },
+    include: { user: { select: EMBEDDED_USER_SELECT }, payments: { orderBy: { paidOn: 'desc' } } },
   });
-  res.json(loan);
+  res.json(withPublicUser(loan));
 });
 
 /** Deletes the loan; its payments go with it (cascade). */
@@ -655,9 +680,9 @@ app.delete('/api/loans/:id/payments/:paymentId', async (req, res) => {
   const updated = await prisma.finLoan.update({
     where: { id },
     data: { remainingPrincipal: latest ? latest.balance : (loan?.principal ?? 0) },
-    include: { user: true, payments: { orderBy: { paidOn: 'desc' } } },
+    include: { user: { select: EMBEDDED_USER_SELECT }, payments: { orderBy: { paidOn: 'desc' } } },
   });
-  res.json(updated);
+  res.json(withPublicUser(updated));
 });
 
 // ─── Dashboard Summary ─────────────────────────────────────
@@ -668,7 +693,7 @@ app.get('/api/dashboard', async (_req, res) => {
     prisma.finTransaction.findMany({
       take: 50,
       orderBy: { date: 'desc' },
-      include: { account: true, category: true, user: true },
+      include: { account: true, category: true, user: { select: EMBEDDED_USER_SELECT } },
     }),
     prisma.finInvestment.findMany(),
     prisma.finLoan.findMany({ where: { status: 'ACTIVE' } }),
@@ -713,7 +738,7 @@ app.get('/api/dashboard', async (_req, res) => {
     monthlyIncome,
     monthlyExpenses,
     monthlySavings: monthlyIncome - monthlyExpenses,
-    recentTransactions: monthTransactions.slice(0, 10),
+    recentTransactions: monthTransactions.slice(0, 10).map(withPublicUser),
     accountCount: accounts.length,
     activeLoans: loans.length,
   });

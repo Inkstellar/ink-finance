@@ -14,6 +14,7 @@ import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import { formatINR, formatINRDecimal, formatDate, formatPercent, todayIST } from '../lib/format';
 import StatCard from '../components/StatCard';
+import UserAvatar from '../components/UserAvatar';
 import HomeWorkIcon from '@mui/icons-material/HomeWork';
 
 interface LoanPayment {
@@ -21,13 +22,14 @@ interface LoanPayment {
 }
 interface User {
   id: string; name: string; initials: string; color: string;
+  hasAvatar?: boolean; updatedAt?: string;
 }
 interface Loan {
   id: string; name: string; lender?: string | null; principal: number;
   interestRate: number; tenureMonths: number; monthlyEmi: number;
   disbursedOn: string; endDate?: string | null; remainingPrincipal: number;
   status: string; accountId?: string | null; userId?: string | null;
-  user?: { id: string; name: string; initials: string; color: string } | null;
+  user?: User | null;
   payments: LoanPayment[];
 }
 
@@ -114,11 +116,10 @@ function LoanRow({
         <TableCell onClick={toggle}>{loan.lender || '—'}</TableCell>
         <TableCell onClick={toggle}>
           {loan.user ? (
-            <Chip
-              label={loan.user.initials}
-              size="small"
-              sx={{ fontWeight: 700, bgcolor: loan.user.color, color: 'white' }}
-            />
+            <Stack direction="row" spacing={1} alignItems="center">
+              <UserAvatar user={loan.user} size={26} fontSize={11} />
+              <Typography variant="body2">{loan.user.name}</Typography>
+            </Stack>
           ) : ('—')}
         </TableCell>
         <TableCell align="right" onClick={toggle}>{formatINR(loan.principal)}</TableCell>

@@ -6,16 +6,18 @@ import {
   Box, Typography, Card, CardContent, Button, Dialog, DialogTitle, DialogContent,
   DialogActions, TextField, MenuItem, Select, FormControl, InputLabel,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper,
-  IconButton, Avatar, Grid, Chip, Stack, Tooltip, InputAdornment, TableSortLabel
+  IconButton, Grid, Chip, Stack, Tooltip, InputAdornment, TableSortLabel
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
+import UserAvatar from '../components/UserAvatar';
 import { formatINRDecimal, formatDate } from '../lib/format';
 
 interface User {
   id: string; name: string; initials: string; color: string; telegramId?: string | null;
+  hasAvatar?: boolean; updatedAt?: string;
 }
 interface Account {
   id: string; name: string; type: string; balance: number;
@@ -232,9 +234,9 @@ export default function Transactions() {
                   <TableCell>
                     {user ? (
                       <Tooltip title={user.name}>
-                        <Avatar sx={{ width: 28, height: 28, bgcolor: user.color, fontSize: 12, fontWeight: 700 }}>
-                          {user.initials}
-                        </Avatar>
+                        <span>
+                          <UserAvatar user={user} size={28} fontSize={12} />
+                        </span>
                       </Tooltip>
                     ) : (
                       <Chip label="—" size="small" sx={{ height: 20, fontSize: 11 }} />

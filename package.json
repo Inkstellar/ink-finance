@@ -34,7 +34,8 @@
     "db:studio": "prisma studio",
     "test:bot": "tsx scripts/bot-analytics.test.ts",
     "test:tx": "node scripts/transactions-smoke.mjs",
-    "test:avatar": "node scripts/avatar-smoke.mjs"
+    "test:avatar": "node scripts/avatar-smoke.mjs",
+    "test:privacy": "node scripts/privacy-smoke.mjs"
   },
   "dependencies": {
     "@auth/express": "^0.12.3",
