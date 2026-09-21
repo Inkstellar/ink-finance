@@ -21,6 +21,7 @@
     "render:status": "node scripts/render-status.mjs",
     "user:set-password": "node scripts/set-password.mjs",
     "test:auth": "node scripts/auth-smoke.mjs",
+    "test:loans": "node scripts/loans-smoke.mjs",
     "build": "prisma generate && tsc -p tsconfig.app.json && vite build",
     "build:server": "tsc -p tsconfig.json",
     "build:dev": "npx tsx server/index.ts",

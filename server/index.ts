@@ -380,7 +380,9 @@ app.get('/api/loans', async (_req, res) => {
   const loans = await prisma.finLoan.findMany({
     include: {
       user: true,
-      payments: { orderBy: { paidOn: 'desc' }, take: 5 },
+      // All payments, not a sample: the page shows a payment history and lets
+      // you remove a mis-entered one, which needs the full list.
+      payments: { orderBy: { paidOn: 'desc' } },
     },
     orderBy: { disbursedOn: 'asc' },
   });
@@ -421,14 +423,74 @@ app.post('/api/loans/:id/payment', async (req, res) => {
   res.json(payment);
 });
 
+/**
+ * Full edit. Every field is optional — only what's sent is changed — so the
+ * status-only updates the bot makes keep working unchanged.
+ */
 app.put('/api/loans/:id', async (req, res) => {
   const { id } = req.params;
-  const { status, remainingPrincipal } = req.body;
+  const {
+    name, lender, principal, interestRate, tenureMonths, monthlyEmi,
+    disbursedOn, endDate, status, remainingPrincipal, accountId, userId,
+  } = req.body ?? {};
+
   const loan = await prisma.finLoan.update({
     where: { id },
-    data: { status, remainingPrincipal },
+    data: {
+      ...(name !== undefined ? { name } : {}),
+      ...(lender !== undefined ? { lender: lender || null } : {}),
+      ...(principal !== undefined ? { principal } : {}),
+      ...(interestRate !== undefined ? { interestRate } : {}),
+      ...(tenureMonths !== undefined ? { tenureMonths } : {}),
+      ...(monthlyEmi !== undefined ? { monthlyEmi } : {}),
+      ...(disbursedOn !== undefined ? { disbursedOn: new Date(disbursedOn) } : {}),
+      ...(endDate !== undefined ? { endDate: endDate ? new Date(endDate) : null } : {}),
+      ...(status !== undefined ? { status } : {}),
+      ...(remainingPrincipal !== undefined ? { remainingPrincipal } : {}),
+      ...(accountId !== undefined ? { accountId: accountId || null } : {}),
+      ...(userId !== undefined ? { userId: userId || null } : {}),
+    },
+    include: { user: true, payments: { orderBy: { paidOn: 'desc' } } },
   });
   res.json(loan);
+});
+
+/** Deletes the loan; its payments go with it (cascade). */
+app.delete('/api/loans/:id', async (req, res) => {
+  const { id } = req.params;
+  await prisma.finLoan.delete({ where: { id } });
+  res.json({ success: true });
+});
+
+/**
+ * Remove a mis-entered payment.
+ *
+ * A payment's `balance` field is the outstanding amount *after* it, so it only
+ * means anything while that payment exists. Deleting one therefore restores the
+ * loan to the newest payment that remains — or to the original principal if
+ * none are left. Anything cleverer would have to re-amortise the whole loan.
+ */
+app.delete('/api/loans/:id/payments/:paymentId', async (req, res) => {
+  const { id, paymentId } = req.params;
+
+  const payment = await prisma.finLoanPayment.findUnique({ where: { id: paymentId } });
+  if (!payment || payment.loanId !== id) {
+    return res.status(404).json({ error: 'Payment not found on this loan' });
+  }
+
+  await prisma.finLoanPayment.delete({ where: { id: paymentId } });
+
+  const [loan, latest] = await Promise.all([
+    prisma.finLoan.findUnique({ where: { id } }),
+    prisma.finLoanPayment.findFirst({ where: { loanId: id }, orderBy: { paidOn: 'desc' } }),
+  ]);
+
+  const updated = await prisma.finLoan.update({
+    where: { id },
+    data: { remainingPrincipal: latest ? latest.balance : (loan?.principal ?? 0) },
+    include: { user: true, payments: { orderBy: { paidOn: 'desc' } } },
+  });
+  res.json(updated);
 });
 
 // ─── Dashboard Summary ─────────────────────────────────────
