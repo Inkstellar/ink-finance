@@ -219,16 +219,35 @@ const opaqueResponse = () => ({
 // ── 1. The manifest ────────────────────────────────────────────────────────
 section('manifest');
 
-const manifestRaw = readFileSync(publicPath('manifest.webmanifest'), 'utf8');
+/*
+ * The file MUST be `.json`, not the canonical `.webmanifest`.
+ *
+ * A static host decides the Content-Type from the extension. Render does not
+ * know `.webmanifest` and serves it as `binary/octet-stream`, which Chrome
+ * rejects outright — the manifest never loads and the app is silently not
+ * installable, with a correct-looking file sitting on disk. `.json` maps to
+ * `application/json` everywhere.
+ *
+ * This was caught only by curling the deployed URL, which is why the extension
+ * is pinned here rather than left to the host's MIME database.
+ */
+const MANIFEST_FILE = 'manifest.json';
+const manifestPath = publicPath(MANIFEST_FILE);
+
+const manifestRaw = readFileSync(manifestPath, 'utf8');
 let manifest = null;
 try {
   manifest = JSON.parse(manifestRaw);
 } catch (error) {
-  check('manifest.webmanifest is valid JSON', false, error.message);
+  check('the manifest is valid JSON', false, error.message);
 }
 
 if (manifest) {
-  check('manifest.webmanifest is valid JSON', true);
+  check('the manifest is valid JSON', true);
+  check('the manifest is a .json file (a host that does not know .webmanifest serves it as octet-stream)',
+    MANIFEST_FILE.endsWith('.json'), MANIFEST_FILE);
+  check('no leftover .webmanifest copy exists to be served by mistake',
+    !existsSync(publicPath('manifest.webmanifest')));
   check('name and short_name are set', Boolean(manifest.name && manifest.short_name));
   check('display is standalone (otherwise it opens in a browser tab)',
     manifest.display === 'standalone', manifest.display);
@@ -332,7 +351,11 @@ const html = readFileSync(join(root, 'index.html'), 'utf8');
 const meta = (name) =>
   new RegExp(`<meta[^>]+name="${name}"[^>]+content="([^"]+)"`).exec(html)?.[1];
 
-check('links the manifest', /<link[^>]+rel="manifest"[^>]+href="\/manifest\.webmanifest"/.test(html));
+const manifestHref = /<link[^>]+rel="manifest"[^>]+href="([^"]+)"/.exec(html)?.[1];
+check('links the manifest, and the href matches the file on disk',
+  manifestHref === `/${MANIFEST_FILE}`, `${manifestHref} vs /${MANIFEST_FILE}`);
+check('the service worker precaches the same manifest path',
+  readFileSync(publicPath('sw.js'), 'utf8').includes(`'/${MANIFEST_FILE}'`));
 check('declares theme-color', /<meta[^>]+name="theme-color"[^>]+content="#[0-9a-f]{6}"/i.test(html));
 check('declares apple-touch-icon', /<link[^>]+rel="apple-touch-icon"[^>]+href="\/apple-touch-icon\.png"/.test(html));
 check('declares apple-mobile-web-app-capable (the flag iOS actually reads)',
@@ -418,7 +441,7 @@ section('service worker');
   check('install precaches the shell',
     shellKeys.includes(`${ORIGIN}/index.html`), shellKeys.join(', '));
   check('install precaches the manifest and icons',
-    shellKeys.includes(`${ORIGIN}/manifest.webmanifest`) &&
+    shellKeys.includes(`${ORIGIN}/${MANIFEST_FILE}`) &&
       shellKeys.includes(`${ORIGIN}/icon-512.png`));
   check('install activates immediately', sw.stats.skipWaiting === 1);
 

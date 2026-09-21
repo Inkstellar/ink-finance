@@ -332,7 +332,7 @@ screen with no browser chrome.
 
 | File | Purpose |
 |------|---------|
-| `public/manifest.webmanifest` | name, icons, `display: standalone`, theme colours, long-press shortcuts |
+| `public/manifest.json` | name, icons, `display: standalone`, theme colours, long-press shortcuts |
 | `public/sw.js` | the service worker (caching rules below) |
 | `public/icon.svg` + 4 PNGs | the mark, at every size the platforms ask for |
 | `scripts/icon-art.mjs` | the mark **as geometry** — the single source for the SVG and every PNG |
@@ -450,7 +450,7 @@ ink-finance/
 │   ├── main.tsx             # Entry point
 │   └── theme.ts             # MUI theme
 ├── public/                  # Copied verbatim into dist/ by Vite
-│   ├── manifest.webmanifest
+│   ├── manifest.json
 │   ├── sw.js                # Service worker (never caches /api)
 │   └── icon.svg, icon-*.png, apple-touch-icon.png
 ├── scripts/
