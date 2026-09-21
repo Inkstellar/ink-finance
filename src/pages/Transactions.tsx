@@ -143,20 +143,37 @@ export default function Transactions() {
 
   return (
     <Box>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: 2 }}>
-        <Typography variant="h3" fontWeight={700}>Transactions</Typography>
-        {!loading && (
-          <Typography variant="body2" color="text.secondary" sx={{ ml: 2, fontWeight: 500 }}>
-            {txs.length} of {(transactions || []).length} {search.trim() ? 'matching' : 'transactions'}
-          </Typography>
-        )}
-        <Stack direction="row" spacing={1} alignItems="center">
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, flexWrap: 'wrap', gap: { xs: 1.5, sm: 2 } }}>
+        {/* Title and count travel together, so the count cannot end up stranded
+            in the middle of the row on a wide screen. */}
+        <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 1.5, flexWrap: 'wrap', minWidth: 0 }}>
+          <Typography variant="h3" fontWeight={700}>Transactions</Typography>
+          {!loading && (
+            <Typography variant="body2" color="text.secondary" sx={{ fontWeight: 500 }}>
+              {txs.length} of {(transactions || []).length} {search.trim() ? 'matching' : 'transactions'}
+            </Typography>
+          )}
+        </Box>
+
+        {/* Below md the three controls stack: a full-width search, then the
+            filter and Add button sharing a row. They cannot simply wrap as a
+            flex row — a 260px search + 140px filter + the button need ~574px,
+            and a phone gives this area 342px (390px minus the 24px page
+            padding on each side). `useFlexGap` matters for the same reason:
+            Stack's default spacing is a left margin, which a wrapped item
+            would keep, pushing the second row out of alignment. */}
+        <Stack
+          direction={{ xs: 'column', md: 'row' }}
+          spacing={1}
+          useFlexGap
+          sx={{ width: { xs: '100%', md: 'auto' }, alignItems: { xs: 'stretch', md: 'center' } }}
+        >
           <TextField
             size="small"
             placeholder="Search transactions…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            sx={{ width: 260 }}
+            sx={{ width: { xs: '100%', md: 260 } }}
             InputProps={{
               startAdornment: (
                 <InputAdornment position="start">
@@ -172,24 +189,45 @@ export default function Transactions() {
               ),
             }}
           />
-          {usr.length > 0 && (
-            <FormControl sx={{ minWidth: 140 }} size="small">
-              <InputLabel>Filter by user</InputLabel>
-              <Select
-                value={filterUser}
-                label="Filter by user"
-                onChange={(e) => setFilterUser(e.target.value)}
+          <Stack
+            direction="row"
+            spacing={1}
+            useFlexGap
+            sx={{ width: { xs: '100%', md: 'auto' }, alignItems: 'center' }}
+          >
+            {usr.length > 0 && (
+              <FormControl
+                size="small"
+                sx={{ flex: { xs: '0 1 260px', md: 'none' }, minWidth: { xs: 0, md: 140 } }}
               >
-                <MenuItem value=""><em>All</em></MenuItem>
-                {usr.map((u) => (
-                  <MenuItem key={u.id} value={u.id}>{u.name}</MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
-          <Button variant="contained" startIcon={<AddIcon />} onClick={() => setOpen(true)}>
-            Add Transaction
-          </Button>
+                <InputLabel>Filter by user</InputLabel>
+                <Select
+                  value={filterUser}
+                  label="Filter by user"
+                  onChange={(e) => setFilterUser(e.target.value)}
+                >
+                  <MenuItem value=""><em>All</em></MenuItem>
+                  {usr.map((u) => (
+                    <MenuItem key={u.id} value={u.id}>{u.name}</MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
+            )}
+            <Button
+              variant="contained"
+              startIcon={<AddIcon />}
+              onClick={() => setOpen(true)}
+              aria-label="Add Transaction"
+              sx={{ ml: 'auto', flexShrink: 0 }}
+            >
+              Add
+              {/* "Add Transaction" needs ~99px of the filter's room, which a
+                  320–360px phone does not have — the label would clip. The +
+                  icon carries the meaning there, and aria-label keeps the full
+                  name for screen readers. */}
+              <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>&nbsp;Transaction</Box>
+            </Button>
+          </Stack>
         </Stack>
       </Box>
 
