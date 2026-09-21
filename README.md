@@ -90,6 +90,8 @@ npm run user:set-password --user K              # also works
 # Verify the whole flow end-to-end against a running API
 npm run test:auth
 npm run test:loans
+npm run test:tx
+npm run test:bot     # pure analytics: templates, bucketing, reports
 ```
 
 > **Why the `--` matters:** npm treats unknown `--flags` as *its own* config and
@@ -180,9 +182,35 @@ npm run bot        # start the Telegram bot (long polling)
 npm run dev:all    # start API + web + bot together
 ```
 
-Bot commands: `/setup` (create default categories + Cash account), `/balance`, `/categories`, `/help`
+Bot commands: `/recent`, `/week`, `/weeks`, `/trend`, `/balance`, `/loan`, `/categories`, `/setup`, `/help`
 
-You can also type quick manual entries: `spent 500 groceries at Reliance` or `received 50000 salary`.
+**Transaction templates** — one line each, all six types:
+
+```
+expense 500 groceries at Reliance
+income 85000 salary
+transfer 10000 from Cash to HDFC (Kousi)
+invest 25000 in Mutual Fund
+sell 15000 in Mutual Fund
+loanpay 2076 for Hdfc housing
+```
+
+Add `by K` to attribute it without being asked. Amounts accept `5k`, `1.2L` and `1cr`.
+A transfer moves money between both accounts, and a loan payment updates the loan's
+outstanding balance as well as recording the transaction (booked as principal — use
+the Loans page if you need to split interest).
+
+**Reports** — `all users` by default, add a user (name or initials) to scope one:
+
+```
+/recent 20          latest transactions
+/week               the past 7 days
+/weeks 4            the last N weeks
+/trend monthly      also: quarterly · half · yearly
+/trend quarterly K  spending trend for one person
+```
+
+Reports show totals in and out, a by-category breakdown, then the rows themselves.
 
 ## API Server
 

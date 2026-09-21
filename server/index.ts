@@ -262,13 +262,26 @@ app.delete('/api/categories/:id', async (req, res) => {
 // ─── Transactions ──────────────────────────────────────────
 
 app.get('/api/transactions', async (req, res) => {
-  const { accountId, categoryId, type, userId, limit, offset } = req.query;
+  const { accountId, categoryId, type, userId, from, to, limit, offset } = req.query;
+
+  // Dates are stored as UTC midnight of the intended calendar day (see
+  // src/lib/format.ts), so an inclusive `to` should be the day itself, not the
+  // end of it.
+  const dateFilter =
+    from || to
+      ? {
+          ...(from ? { gte: new Date(String(from)) } : {}),
+          ...(to ? { lte: new Date(String(to)) } : {}),
+        }
+      : undefined;
+
   const transactions = await prisma.finTransaction.findMany({
     where: {
       ...(accountId && { accountId: String(accountId) }),
       ...(categoryId && { categoryId: String(categoryId) }),
       ...(type && { type: String(type) as 'INCOME' | 'EXPENSE' | 'TRANSFER' | 'INVESTMENT_BUY' | 'INVESTMENT_SELL' | 'LOAN_PAYMENT' }),
       ...(userId && { userId: String(userId) }),
+      ...(dateFilter && { date: dateFilter }),
     },
     include: { account: true, category: true, user: true },
     orderBy: { date: 'desc' },
@@ -280,6 +293,12 @@ app.get('/api/transactions', async (req, res) => {
 
 app.post('/api/transactions', async (req, res) => {
   const { amount, type, date, description, notes, accountId, categoryId, userId, toAccountId } = req.body;
+
+  if (!accountId) return res.status(400).json({ error: 'An account is required' });
+  if (type === 'TRANSFER' && !toAccountId) {
+    return res.status(400).json({ error: 'A transfer needs a destination account' });
+  }
+
   const tx = await prisma.finTransaction.create({
     data: {
       amount,
@@ -295,15 +314,29 @@ app.post('/api/transactions', async (req, res) => {
     include: { account: true, category: true, user: true },
   });
 
-  // Update account balance
-  const balanceChange =
-    type === 'INCOME' ? amount :
-    type === 'EXPENSE' || type === 'LOAN_PAYMENT' || type === 'INVESTMENT_BUY' ? -amount :
-    0; // TRANSFER handled separately
-  if (balanceChange !== 0) {
+  // Apply the balance effects. A transfer moves money between two accounts and
+  // a sale credits the account, so neither fits a single signed delta on
+  // `accountId` — which is why transfers used to leave both balances untouched.
+  const credits = type === 'INCOME' || type === 'INVESTMENT_SELL';
+  const debits =
+    type === 'EXPENSE' || type === 'LOAN_PAYMENT' || type === 'INVESTMENT_BUY' || type === 'TRANSFER';
+
+  if (credits) {
     await prisma.finAccount.update({
       where: { id: accountId },
-      data: { balance: { increment: balanceChange } },
+      data: { balance: { increment: amount } },
+    });
+  }
+  if (debits) {
+    await prisma.finAccount.update({
+      where: { id: accountId },
+      data: { balance: { decrement: amount } },
+    });
+  }
+  if (type === 'TRANSFER' && toAccountId) {
+    await prisma.finAccount.update({
+      where: { id: toAccountId },
+      data: { balance: { increment: amount } },
     });
   }
 

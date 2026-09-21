@@ -1,5 +1,7 @@
 // Shared types for the Telegram bot service
 
+import type { TxType } from './analytics';
+
 export interface FinAccount {
   id: string;
   name: string;
@@ -27,7 +29,9 @@ export interface ReceiptAnalysis {
   amount: number;
   date: string;        // YYYY-MM-DD
   category: string;
-  type: 'EXPENSE' | 'INCOME';
+  // The receipt flow only ever produces EXPENSE or INCOME, but a typed template
+  // ("transfer …", "sell …") reuses this shape, so it carries the full union.
+  type: TxType;
   paymentMethod?: string;
   rawText?: string;
   confidence: number;  // 0-1
@@ -50,6 +54,10 @@ export interface PendingTransaction {
   categoryId?: string;
   userId?: string | null;
   createdAt: number;
+  /** Source account, kept while a transfer waits for its destination. */
+  accountId?: string;
+  /** Set for a LOAN_PAYMENT confirmed from a template, so the loan follows. */
+  loanId?: string;
 }
 
 // ── Loans ──────────────────────────────────────────────────
@@ -124,4 +132,32 @@ export interface CreateTransactionPayload {
   accountId: string;
   categoryId?: string;
   userId?: string | null;
+  /** Destination account — required by the API for a TRANSFER. */
+  toAccountId?: string;
+}
+
+/** Filters for GET /api/transactions. */
+export interface TransactionQuery {
+  userId?: string;
+  type?: string;
+  from?: string;   // YYYY-MM-DD, inclusive
+  to?: string;     // YYYY-MM-DD, inclusive
+  limit?: number;
+}
+
+/** A transaction as the API returns it, with its relations expanded. */
+export interface TransactionRow {
+  id: string;
+  amount: number;
+  type: string;
+  date: string;
+  description: string;
+  notes?: string | null;
+  accountId: string;
+  categoryId?: string | null;
+  userId?: string | null;
+  toAccountId?: string | null;
+  account?: { id: string; name: string } | null;
+  category?: { id: string; name: string } | null;
+  user?: FinUser | null;
 }

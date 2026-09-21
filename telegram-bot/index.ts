@@ -5,7 +5,14 @@ import type { Update } from 'telegraf/types';
 import { analyzeReceipt, DEFAULT_CATEGORIES } from './ai-vision';
 import { FinanceApiClient } from './api-client';
 import { todayIST } from './dates';
-import type { PendingTransaction, PendingLoan, ReceiptAnalysis, FinUser } from './types';
+import {
+  formatTxReport, parseAmount, parseTxTemplate,
+  periodDays, periodWeeks, trendReport, TX_TYPES,
+  type Granularity, type TxDraft,
+} from './analytics';
+import type {
+  PendingTransaction, PendingLoan, ReceiptAnalysis, FinUser, TransactionRow,
+} from './types';
 
 // ── Config ────────────────────────────────────────────────
 const BOT_TOKEN = process.env.BOT_TOKEN!;
@@ -21,13 +28,17 @@ if (!BOT_TOKEN) {
 }
 
 // ── Command registry ──────────────────────────────────────
-// Single source of truth: /help renders this list and it is also
-// published to Telegram via setMyCommands so "/" shows the menu.
+// Published to Telegram via setMyCommands so "/" shows the menu, and rendered
+// by /help — one source of truth, so the two cannot drift.
 const COMMANDS = [
   { command: 'start',      description: 'Welcome message and quick intro' },
-  { command: 'help',       description: 'List all available commands' },
-  { command: 'loan',       description: 'Add a loan — /loan 5000000 -> Housing -> Kousi' },
+  { command: 'help',       description: 'All commands and transaction templates' },
+  { command: 'recent',     description: 'Latest transactions — /recent 20 K' },
+  { command: 'week',       description: 'This past week — /week or /week P' },
+  { command: 'weeks',      description: 'The last N weeks — /weeks 4' },
+  { command: 'trend',      description: 'Spending trend — /trend quarterly K' },
   { command: 'balance',    description: 'Show dashboard summary' },
+  { command: 'loan',       description: 'Add a loan — /loan 5000000 -> Housing -> Kousi' },
   { command: 'categories', description: 'List all categories' },
   { command: 'setup',      description: 'Create default categories and accounts' },
 ];
@@ -38,7 +49,7 @@ const pending = new Map<string, PendingTransaction>();
 const PENDING_TTL = 5 * 60 * 1000; // 5 minutes
 
 // Track which step each pending transaction is at: 'user' | 'account'
-const pendingStep = new Map<string, 'user' | 'account'>();
+const pendingStep = new Map<string, 'user' | 'account' | 'transferTo'>();
 
 // Loan drafts mid-way through the /loan workflow, and how far along each is
 const loanDrafts = new Map<string, PendingLoan>();
@@ -164,18 +175,8 @@ function loanTypeByLabel(label: string): LoanTypePreset {
 }
 
 /** "50,00,000" → 5000000 · "8L" → 800000 · "1.2cr" → 12000000 · "50k" → 50000 */
-function parseAmount(raw: string): number | null {
-  const cleaned = raw.replace(/[,\s₹]/g, '').toLowerCase();
-  const m = cleaned.match(/^(\d+(?:\.\d+)?)(k|l|lakh|lac|cr|crore)?$/);
-  if (!m) return null;
-  const n = parseFloat(m[1]);
-  if (!isFinite(n) || n <= 0) return null;
-  const mult =
-    m[2] === 'k' ? 1e3 :
-    m[2] === 'cr' || m[2] === 'crore' ? 1e7 :
-    m[2] ? 1e5 : 1;
-  return Math.round(n * mult * 100) / 100;
-}
+// parseAmount lives in analytics.ts so the templates and the loan flow share
+// exactly one implementation.
 
 /** Reducing-balance EMI. Falls back to a flat split when the rate is 0. */
 function calcEmi(principal: number, annualRatePct: number, months: number): number {
@@ -344,6 +345,12 @@ interface FlowCtx {
 }
 
 /**
+ * A context that can only reply — enough for the helper that renders buttons,
+ * and satisfied by both message and callback-query contexts.
+ */
+type ReplyCtx = Pick<FlowCtx, 'reply'>;
+
+/**
  * Kick off the loan flow from a template message.
  * Returns false when the text wasn't a loan command at all.
  */
@@ -453,9 +460,24 @@ bot.help(async ctx => {
     `AI reads merchant, amount, date and category, then you pick *who* is adding it (K / P) and *which account* to use.\n\n` +
 
     `*✍️ Add a transaction by typing*\n` +
+    TX_TYPES.map(t => `\`${t.template}\`  — ${t.blurb}`).join('\n') +
+    '\n\n' +
+    `Examples:\n` +
     `\`spent 500 groceries at Reliance\`\n` +
-    `\`received 50000 salary\`\n` +
-    `Verbs: spent · paid · received · got\n\n` +
+    `\`income 85000 salary\`\n` +
+    `\`transfer 10000 from Cash to HDFC (Kousi)\`\n` +
+    `\`invest 25000 in Mutual Fund\`\n` +
+    `\`loanpay 2076 for Hdfc housing\`\n\n` +
+    `Add \`by K\` (or \`by P\`) to attribute it without being asked.\n` +
+    `A transfer moves money between two accounts, and a loan payment also updates that loan.\n\n` +
+
+    `*📊 Reports*\n` +
+    `\`/recent 20\` — the latest transactions\n` +
+    `\`/week\` — the past 7 days\n` +
+    `\`/weeks 4\` — the last N weeks\n` +
+    `\`/trend monthly\` · \`quarterly\` · \`half\` · \`yearly\` — spending trend\n\n` +
+    `Add a user to any report to scope it: \`/week K\`, \`/trend quarterly Preeti\`.\n` +
+    `Leave it off to see everyone.\n\n` +
 
     `*🏦 Add a loan*\n` +
     `\`loan <amount> -> <type> -> <owner>\`\n` +
@@ -536,6 +558,260 @@ bot.command('categories', async ctx => {
 
 // ── /loan ──────────────────────────────────────────────────
 // Same template as the bare-text form:  /loan 5000000 -> Housing -> Kousi
+// ── Reports: /recent, /week, /weeks, /trend ────────────────
+
+/**
+ * Pull an optional user filter off the end of a command's arguments, so
+ * `/week K`, `/recent 20 Preeti` and `/trend quarterly P` all work.
+ */
+async function takeUserFilter(args: string[]): Promise<{ rest: string[]; user?: FinUser }> {
+  if (args.length === 0) return { rest: args };
+  const users = await api.getUsers();
+  const user = resolveUser(users, args[args.length - 1]);
+  if (!user) return { rest: args };
+  return { rest: args.slice(0, -1), user };
+}
+
+async function sendTxReport(
+  ctx: FlowCtx,
+  title: string,
+  query: { from?: string; to?: string; userId?: string; limit?: number },
+  user?: FinUser,
+): Promise<void> {
+  try {
+    const txs = (await api.getTransactions(query)) as unknown as Parameters<typeof formatTxReport>[0];
+    await ctx.reply(formatTxReport(txs, title, { userLabel: user?.name }), { parse_mode: 'Markdown' });
+  } catch (err) {
+    console.error('[report] failed:', err);
+    await ctx.reply('❌ Could not fetch transactions. Is the API awake?');
+  }
+}
+
+bot.command('recent', async ctx => {
+  const args = ctx.payload.trim().split(/\s+/).filter(Boolean);
+  const { rest, user } = await takeUserFilter(args);
+  const parsed = parseInt(rest[0] ?? '', 10);
+  const n = Math.min(50, Math.max(1, Number.isFinite(parsed) ? parsed : 10));
+  await sendTxReport(ctx, `Latest ${n} transactions`, { userId: user?.id, limit: n }, user);
+});
+
+bot.command('week', async ctx => {
+  const args = ctx.payload.trim().split(/\s+/).filter(Boolean);
+  const { user } = await takeUserFilter(args);
+  const p = periodDays(7);
+  await sendTxReport(ctx, p.title, { from: p.from, to: p.to, userId: user?.id }, user);
+});
+
+bot.command('weeks', async ctx => {
+  const args = ctx.payload.trim().split(/\s+/).filter(Boolean);
+  const { rest, user } = await takeUserFilter(args);
+  const parsed = parseInt(rest[0] ?? '', 10);
+  const n = Math.min(52, Math.max(1, Number.isFinite(parsed) ? parsed : 2));
+  const p = periodWeeks(n);
+  await sendTxReport(ctx, p.title, { from: p.from, to: p.to, userId: user?.id }, user);
+});
+
+const GRANULARITIES: Record<string, Granularity> = {
+  monthly: 'monthly', month: 'monthly', months: 'monthly', m: 'monthly',
+  quarterly: 'quarterly', quarter: 'quarterly', quarters: 'quarterly', q: 'quarterly',
+  half: 'half', halfyearly: 'half', 'half-yearly': 'half', 'half-year': 'half',
+  semiannual: 'half', h: 'half',
+  yearly: 'yearly', year: 'yearly', annual: 'yearly', years: 'yearly', y: 'yearly',
+};
+
+bot.command('trend', async ctx => {
+  const args = ctx.payload.trim().split(/\s+/).filter(Boolean);
+  const { rest, user } = await takeUserFilter(args);
+  const word = (rest[0] ?? 'monthly').toLowerCase();
+  const granularity = GRANULARITIES[word];
+
+  if (!granularity) {
+    await ctx.reply(
+      `⚠️ I don't know "${word}".\n\nTry: /trend monthly · /trend quarterly · /trend half · /trend yearly\n` +
+      `Add a user to scope it: /trend quarterly K`,
+      { parse_mode: 'Markdown' },
+    );
+    return;
+  }
+
+  try {
+    // The bucketing drops anything older than the window, so fetching the
+    // history and letting it filter is simpler than computing a start date per
+    // granularity — and at household volume it is cheap.
+    const txs = await api.getTransactions({ userId: user?.id, limit: 1000 });
+    await ctx.reply(
+      trendReport(txs as unknown as Parameters<typeof trendReport>[0], granularity, {
+        userLabel: user?.name,
+      }),
+      { parse_mode: 'Markdown' },
+    );
+  } catch (err) {
+    console.error('[trend] failed:', err);
+    await ctx.reply('❌ Could not build the trend. Is the API awake?');
+  }
+});
+
+// ── Transaction templates ──────────────────────────────────
+
+/** Type-aware one-liner describing what is about to be recorded. */
+function draftSummary(p: PendingTransaction): string {
+  const icon: Record<string, string> = {
+    INCOME: '💚', EXPENSE: '💔', TRANSFER: '🔁',
+    INVESTMENT_BUY: '📥', INVESTMENT_SELL: '📤', LOAN_PAYMENT: '🏦',
+  };
+  return (
+    `${icon[p.analysis.type] ?? '•'} *${p.analysis.type.replace(/_/g, ' ')}*\n` +
+    `📝 ${p.analysis.merchant}\n` +
+    `💰 ${fmt(p.analysis.amount)}\n` +
+    `📅 ${p.analysis.date}` +
+    (p.analysis.category && p.analysis.category !== '—' ? `\n🏷 ${p.analysis.category}` : '')
+  );
+}
+
+/** Show the account buttons. `exclude` keeps a transfer from targeting itself. */
+async function askForAccount(
+  ctx: ReplyCtx,
+  pid: string,
+  p: PendingTransaction,
+  opts: { heading: string; exclude?: string } = { heading: '✅ *Select account:*' },
+): Promise<void> {
+  const accounts = (await api.getAccounts()).filter(a => a.id !== opts.exclude);
+  if (accounts.length === 0) {
+    await ctx.reply('⚠️ No usable accounts. Add one on the Accounts page first.');
+    return;
+  }
+  const rows = accounts.map(a => [
+    Markup.button.callback(`${a.name} (${fmt(a.balance)})`, `tx:${pid}:${a.id}`),
+  ]);
+  rows.push([Markup.button.callback('❌ Cancel', `cancel:${pid}`)]);
+
+  await ctx.reply(
+    `${draftSummary(p)}\n\n${opts.heading}`,
+    { parse_mode: 'Markdown', ...Markup.inlineKeyboard(rows) },
+  );
+}
+
+/**
+ * Turn a parsed template into a pending transaction and start the confirm
+ * flow. Reuses the same pending/step machinery as the receipt flow, so the
+ * account buttons and confirmation behave identically.
+ */
+async function startTransactionFromDraft(
+  ctx: FlowCtx,
+  text: string,
+  draft: TxDraft,
+): Promise<void> {
+  const accounts = await api.getAccounts();
+  if (accounts.length === 0) {
+    await ctx.reply('⚠️ No accounts yet. Run /setup, or add one on the Accounts page.');
+    return;
+  }
+
+  // Categories only mean something for expenses and incomes.
+  let categoryId: string | undefined;
+  if (draft.categoryHint && (draft.type === 'EXPENSE' || draft.type === 'INCOME')) {
+    categoryId = await matchOrCreateCategory(draft.categoryHint, draft.type);
+  }
+
+  // A loan payment names a loan, and the loan has to move with it.
+  let loanId: string | undefined;
+  if (draft.type === 'LOAN_PAYMENT') {
+    const loans = await api.getLoans();
+    if (loans.length === 0) {
+      await ctx.reply('⚠️ No loans recorded yet. Add one first — /loan 5000000 -> Housing -> Kousi');
+      return;
+    }
+    const hint = (draft.loanHint ?? draft.description ?? '').toLowerCase();
+    const loan =
+      loans.find(l => l.name.toLowerCase() === hint) ??
+      loans.find(l => l.name.toLowerCase().includes(hint) || hint.includes(l.name.toLowerCase())) ??
+      (loans.length === 1 ? loans[0] : undefined);
+    if (!loan) {
+      await ctx.reply(
+        `⚠️ Which loan?\n\nKnown loans: ${loans.map(l => `*${l.name}*`).join(', ')}\n\n` +
+        `Retry with e.g. \`loanpay ${draft.amount} for ${loans[0].name}\``,
+        { parse_mode: 'Markdown' },
+      );
+      return;
+    }
+    loanId = loan.id;
+  }
+
+  const users = await api.getUsers();
+  const owner = draft.ownerHint ? resolveUser(users, draft.ownerHint) : undefined;
+
+  const pid = shortId();
+  const pendingTx: PendingTransaction = {
+    id: pid,
+    telegramUserId: ctx.from.id,
+    chatId: ctx.chat.id,
+    messageText: text,
+    analysis: {
+      merchant: draft.description || (draft.type === 'TRANSFER' ? 'Transfer' : 'Transaction'),
+      amount: draft.amount,
+      type: draft.type,
+      category: draft.categoryHint ?? '—',
+      date: todayIST(),
+      confidence: 1,
+    },
+    categoryId,
+    userId: owner?.id ?? null,
+    loanId,
+    createdAt: Date.now(),
+  };
+
+  // A named account skips the account picker for expenses/incomes; transfers
+  // always ask, because both sides have to be chosen.
+  const hintedAccount =
+    draft.accountHint && draft.type !== 'TRANSFER'
+      ? accounts.find(a => a.name.toLowerCase() === draft.accountHint!.toLowerCase()) ??
+        accounts.find(a => a.name.toLowerCase().includes(draft.accountHint!.toLowerCase()))
+      : undefined;
+
+  pending.set(pid, pendingTx);
+
+  if (draft.accountHint && draft.type === 'TRANSFER') {
+    const source =
+      accounts.find(a => a.name.toLowerCase() === draft.accountHint!.toLowerCase()) ??
+      accounts.find(a => a.name.toLowerCase().includes(draft.accountHint!.toLowerCase()));
+    if (source) {
+      pending.set(pid, { ...pendingTx, accountId: source.id });
+      pendingStep.set(pid, 'transferTo');
+      await askForAccount(ctx, pid, { ...pendingTx, accountId: source.id }, {
+        heading: `🔁 From *${source.name}* — now pick the destination:`,
+        exclude: source.id,
+      });
+      return;
+    }
+  }
+
+  // Owner known → straight to accounts; otherwise ask who it belongs to first.
+  if (owner || !draft.accountHint) {
+    if (owner) {
+      pendingStep.set(pid, 'account');
+      await askForAccount(ctx, pid, pendingTx);
+      return;
+    }
+    pendingStep.set(pid, 'user');
+    const rows = users.map(u => [Markup.button.callback(`${u.initials} — ${u.name}`, `usr:${pid}:${u.id}`)]);
+    rows.push([Markup.button.callback('⏭ Skip', `skip:${pid}`)]);
+    await ctx.reply(
+      `${draftSummary(pendingTx)}\n\n👤 *Who is this for?*`,
+      { parse_mode: 'Markdown', ...Markup.inlineKeyboard(rows) },
+    );
+    return;
+  }
+
+  // Account named, no owner: confirm that account directly.
+  pending.set(pid, { ...pendingTx, accountId: hintedAccount?.id });
+  pendingStep.set(pid, 'account');
+  await askForAccount(ctx, pid, { ...pendingTx, accountId: hintedAccount?.id }, {
+    heading: hintedAccount
+      ? `✅ Confirm *${hintedAccount.name}* or pick another:`
+      : '✅ *Select account:*',
+  });
+}
+
 bot.command('loan', async ctx => {
   const msg = ctx.message;
   const text = msg && 'text' in msg ? msg.text : '';
@@ -843,10 +1119,29 @@ bot.action(/tx:(.+):(.+)/, async ctx => {
     return;
   }
 
+  // A transfer has two ends: the first pick is the source, so ask for the
+  // destination before creating anything.
+  if (p.analysis.type === 'TRANSFER' && pendingStep.get(pid) !== 'transferTo') {
+    const accounts = await api.getAccounts();
+    const source = accounts.find(a => a.id === accountId);
+    await ctx.answerCbQuery('Source set');
+    pending.set(pid, { ...p, accountId });
+    pendingStep.set(pid, 'transferTo');
+    await askForAccount(ctx, pid, { ...p, accountId }, {
+      heading: `🔁 From *${source?.name ?? 'account'}* — now pick where it goes:`,
+      exclude: accountId,
+    });
+    return;
+  }
+
   try {
     await ctx.answerCbQuery('Creating transaction...');
 
-    const tx = await api.createTransaction({
+    const isTransfer = p.analysis.type === 'TRANSFER';
+    const fromAccountId = isTransfer ? p.accountId! : accountId;
+    const toAccountId = isTransfer ? accountId : undefined;
+
+    await api.createTransaction({
       amount: p.analysis.amount,
       type: p.analysis.type,
       date: p.analysis.date,
@@ -855,29 +1150,55 @@ bot.action(/tx:(.+):(.+)/, async ctx => {
         p.analysis.paymentMethod ? `Paid via ${p.analysis.paymentMethod}` : '',
         p.analysis.rawText ? `Receipt text: ${p.analysis.rawText.slice(0, 200)}` : '',
       ].filter(Boolean).join('\n') || undefined,
-      accountId,
+      accountId: fromAccountId,
       categoryId: p.categoryId,
       userId: p.userId || null,
+      ...(toAccountId ? { toAccountId } : {}),
     });
+
+    // A loan payment entered from a template should move the loan too,
+    // otherwise the EMI would exist as a transaction but the loan would still
+    // show the old outstanding balance. Chat can't know the interest split, so
+    // the whole payment is booked as principal.
+    let loanNote = '';
+    if (p.loanId) {
+      const loan = (await api.getLoans()).find(l => l.id === p.loanId);
+      if (loan) {
+        await api.createLoanPayment(loan.id, {
+          amount: p.analysis.amount,
+          principal: p.analysis.amount,
+          interest: 0,
+          balance: Math.max(0, loan.remainingPrincipal - p.analysis.amount),
+          paidOn: p.analysis.date,
+        });
+        loanNote =
+          `\n🏦 ${loan.name} → outstanding ${fmt(Math.max(0, loan.remainingPrincipal - p.analysis.amount))}` +
+          `\n_Booked as principal; use the Loans page if you need to split interest._`;
+      }
+    }
 
     pending.delete(pid);
     pendingStep.delete(pid);
 
-    const [account, matchedUser] = await Promise.all([
-      api.getAccounts(),
-      p.userId ? api.getUsers() : Promise.resolve([]),
-    ]);
-    const acct = account.find(a => a.id === accountId);
-    const user = matchedUser.find(u => u.id === p.userId);
+    const accounts = await api.getAccounts();
+    const from = accounts.find(a => a.id === fromAccountId);
+    const to = toAccountId ? accounts.find(a => a.id === toAccountId) : undefined;
+    const user = p.userId ? (await api.getUsers()).find(u => u.id === p.userId) : undefined;
+
     await ctx.editMessageText(
-      `✅ *Transaction Created!*\n\n` +
+      `✅ *${isTransfer ? 'Transfer recorded' : 'Transaction created'}!*\n\n` +
       `👤 ${user?.name || '—'}\n` +
-      `🏪 ${p.analysis.merchant}\n` +
-      `💰 ${fmt(p.analysis.amount)} (${p.analysis.type})\n` +
+      `📝 ${p.analysis.merchant}\n` +
+      `💰 ${fmt(p.analysis.amount)} (${p.analysis.type.replace(/_/g, ' ')})\n` +
       `📅 ${p.analysis.date}\n` +
-      `🏷 ${p.analysis.category}\n` +
-      `💳 ${acct?.name || 'Account'}\n\n` +
-      `New balance: ${acct ? fmt(acct.balance) : '—'}`,
+      (p.categoryId ? `🏷 ${p.analysis.category}\n` : '') +
+      (isTransfer
+        ? `💳 ${from?.name ?? '—'} → ${to?.name ?? '—'}\n`
+        : `💳 ${from?.name ?? 'Account'}\n`) +
+      loanNote +
+      (isTransfer
+        ? `\n${from?.name ?? 'From'}: ${from ? fmt(from.balance) : '—'}\n${to?.name ?? 'To'}: ${to ? fmt(to.balance) : '—'}`
+        : `\nNew balance: ${from ? fmt(from.balance) : '—'}`),
       { parse_mode: 'Markdown' },
     );
   } catch (err) {
@@ -915,84 +1236,33 @@ bot.on(message('text'), async ctx => {
   // ── Loan template: "loan 5000000 -> Housing -> Kousi" ──
   if (await startLoanFlow(ctx, text)) return;
 
-  // Quick manual entry: "spent 500 groceries at Reliance"
-  const match = text.match(
-    /^(spent|received|paid|got)\s+(\d+(?:\.\d+)?)\s+(?:for\s+|on\s+|at\s+)?(.+)/i,
-  );
-  if (!match) {
-    await ctx.reply(
-      '📸 Send a photo of a bill/receipt to auto-create a transaction.\n\n' +
-      'Or type manually:\n`spent 500 groceries at Reliance`\n`received 50000 salary`\n\n' +
-      'Add a loan:\n`loan 5000000 -> Housing -> Kousi`\n\n' +
-      'Send /help for everything I can do.',
-      { parse_mode: 'Markdown' },
-    );
-    return;
-  }
-
-  const [, verb, amountStr, rest] = match;
-  const amount = parseFloat(amountStr);
-  const type = /received|got/i.test(verb) ? 'INCOME' : 'EXPENSE';
-  const parts = rest.split(/\s+(?:at|from)\s+/i);
-  const category = parts[0]?.trim() || 'Other';
-  const merchant = parts[1]?.trim() || parts[0]?.trim() || 'Unknown';
-
-  const categoryId = await matchOrCreateCategory(category, type);
-  const accounts = await api.getAccounts();
-
-  if (accounts.length === 0) {
-    await ctx.reply('⚠️ No accounts. Run /setup first.');
-    return;
-  }
-
-  // If single account, create directly
-  if (accounts.length === 1) {
-    try {
-      await api.createTransaction({
-        amount, type,
-        date: todayIST(),
-        description: merchant,
-        accountId: accounts[0].id,
-        categoryId,
-      });
-      await ctx.reply(
-        `✅ ${type === 'INCOME' ? 'Income' : 'Expense'} of ${fmt(amount)} → ${merchant} (${category})`,
-      );
-    } catch {
-      await ctx.reply('❌ Failed to create transaction.');
+  // ── Typed transaction templates ──
+  //   expense 500 groceries at Reliance
+  //   income 85000 salary
+  //   transfer 10000 from Cash to HDFC (Kousi)
+  //   invest 25000 in Mutual Fund
+  //   sell 15000 in Mutual Fund
+  //   loanpay 2076 for Hdfc housing
+  // Also handles the older bare forms ("spent 500 groceries at Reliance").
+  const parsedDraft = parseTxTemplate(text);
+  if (parsedDraft) {
+    if ('error' in parsedDraft) {
+      await ctx.reply(`⚠️ ${parsedDraft.error}`, { parse_mode: 'Markdown' });
+      return;
     }
+    await startTransactionFromDraft(ctx, text, parsedDraft);
     return;
   }
-
-  // Multiple accounts — show user picker first
-  const pid = shortId();
-  pending.set(pid, {
-    id: pid,
-    telegramUserId: ctx.from.id,
-    chatId: ctx.chat.id,
-    messageText: text,
-    analysis: {
-      merchant, amount, type, category,
-      date: todayIST(),
-      confidence: 1,
-    },
-    categoryId,
-    createdAt: Date.now(),
-  });
-  pendingStep.set(pid, 'user');
-
-  const users = await api.getUsers();
-  const userRows = users.map(u => [
-    Markup.button.callback(
-      `${u.initials} — ${u.name}`,
-      `usr:${pid}:${u.id}`,
-    ),
-  ]);
-  userRows.push([Markup.button.callback('⏭ Skip', `skip:${pid}`)]);
 
   await ctx.reply(
-    `👤 *Who is adding this transaction?*`,
-    { parse_mode: 'Markdown', ...Markup.inlineKeyboard(userRows) },
+    '📸 Send a photo of a bill/receipt to auto-create a transaction.\n\n' +
+    '*Or type a template:*\n' +
+    TX_TYPES.map(t => `\`${t.template}\``).join('\n') +
+    '\n\n*Or ask for a report:*\n' +
+    '`/week` · `/weeks 4` · `/recent 20` · `/trend quarterly`\n' +
+    'Add a user to any of them: `/week K`, `/trend monthly P`\n\n' +
+    'Send /help for everything I can do.',
+    { parse_mode: 'Markdown' },
   );
 });
 
