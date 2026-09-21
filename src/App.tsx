@@ -11,6 +11,7 @@ import MenuIcon from '@mui/icons-material/Menu';
 import { Routes, Route } from 'react-router-dom';
 import Sidebar, { MobileDrawer } from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
+import Calendar from './pages/Calendar';
 import Accounts from './pages/Accounts';
 import Transactions from './pages/Transactions';
 import Investments from './pages/Investments';
@@ -111,6 +112,7 @@ export default function App() {
         <Box component="main" sx={{ flexGrow: 1, p: 3, overflow: 'auto' }}>
           <Routes>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/calendar" element={<Calendar />} />
             <Route path="/accounts" element={<Accounts />} />
             <Route path="/transactions" element={<Transactions />} />
             <Route path="/investments" element={<Investments />} />

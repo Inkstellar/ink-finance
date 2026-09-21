@@ -949,6 +949,163 @@ app.delete('/api/loans/:id/payments/:paymentId', async (req, res) => {
   res.json(withPublicUser(updated));
 });
 
+// ─── Events (shared calendar) ───────────────────────────────
+
+/**
+ * Normalise any accepted date input to UTC midnight of the intended calendar
+ * day.
+ *
+ * `fin_events.date` holds a *date*, not an instant — the same convention as
+ * `fin_transactions.date`. Storing whatever `new Date()` happened to produce
+ * would put a time-of-day in the column, which then sorts oddly within a day
+ * and formats as the wrong day on a device west of Greenwich. So the date part
+ * is taken and the time is dropped, always.
+ *
+ * `YYYY-MM-DD` is the expected form (that is what a date input sends, and what
+ * the calendar's day keys are); a full ISO string is accepted and reduced.
+ */
+function utcMidnight(value: unknown): Date | null {
+  const s = String(value ?? '').trim();
+  if (!s) return null;
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00.000Z` : s);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+
+/** `HH:MM`, 24-hour. Null/empty clears the time, i.e. an all-day event. */
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/**
+ * The events overlapping an inclusive date window, oldest first.
+ *
+ * `from`/`to` are what let the calendar fetch one month instead of everything.
+ * The match is an *overlap*, not a containment: a trip running 28 Aug – 3 Sep
+ * has to appear in September's grid as well as August's, so an event qualifies
+ * when it starts on or before `to` **and** reaches on or after `from`. With no
+ * `endDate` the event is a single day and `date` is its own end.
+ */
+app.get('/api/events', async (req, res) => {
+  const { from, to, userId } = req.query;
+  const start = utcMidnight(from);
+  const end = utcMidnight(to);
+
+  if (from && !start) return res.status(400).json({ error: 'Invalid "from" date' });
+  if (to && !end) return res.status(400).json({ error: 'Invalid "to" date' });
+
+  const events = await prisma.finEvent.findMany({
+    where: {
+      AND: [
+        ...(end ? [{ date: { lte: end } }] : []),
+        ...(start
+          ? [
+              {
+                OR: [
+                  { endDate: { gte: start } },
+                  { endDate: null, date: { gte: start } },
+                ],
+              },
+            ]
+          : []),
+        ...(userId ? [{ userId: String(userId) }] : []),
+      ],
+    },
+    include: { user: { select: EMBEDDED_USER_SELECT } },
+    // All-day events (no startTime) lead each day, then chronological.
+    orderBy: [{ date: 'asc' }, { startTime: { sort: 'asc', nulls: 'first' } }],
+  });
+  res.json(events.map(withPublicUser));
+});
+
+app.post('/api/events', async (req, res) => {
+  const { title, date, endDate, startTime, notes, userId } = req.body ?? {};
+
+  const trimmed = String(title ?? '').trim();
+  if (!trimmed) return res.status(400).json({ error: 'A title is required' });
+
+  const day = utcMidnight(date);
+  if (!day) return res.status(400).json({ error: 'A valid date is required' });
+
+  const last = endDate ? utcMidnight(endDate) : null;
+  if (endDate && !last) return res.status(400).json({ error: 'Invalid end date' });
+  if (last && last < day) {
+    return res.status(400).json({ error: 'The end date cannot be before the start date' });
+  }
+
+  const time = startTime ? String(startTime) : '';
+  if (time && !TIME_RE.test(time)) {
+    return res.status(400).json({ error: 'Time must be HH:MM (24-hour)' });
+  }
+
+  const event = await prisma.finEvent.create({
+    data: {
+      title: trimmed,
+      date: day,
+      endDate: last,
+      startTime: time || null,
+      notes: notes ? String(notes) : null,
+      userId: userId || null,
+    },
+    include: { user: { select: EMBEDDED_USER_SELECT } },
+  });
+  res.json(withPublicUser(event));
+});
+
+/**
+ * Partial update — only the fields actually sent are touched, so the dialog can
+ * save an edit without having to round-trip every column. An explicit `null`
+ * clears an optional field; `undefined` (absent) leaves it alone.
+ */
+app.put('/api/events/:id', async (req, res) => {
+  const { id } = req.params;
+  const { title, date, endDate, startTime, notes, userId } = req.body ?? {};
+
+  const existing = await prisma.finEvent.findUnique({ where: { id } });
+  if (!existing) return res.status(404).json({ error: 'Event not found' });
+
+  const day = date !== undefined ? utcMidnight(date) : null;
+  if (date !== undefined && !day) {
+    return res.status(400).json({ error: 'A valid date is required' });
+  }
+  const last = endDate ? utcMidnight(endDate) : null;
+  if (endDate && !last) return res.status(400).json({ error: 'Invalid end date' });
+
+  // Validate against the values the row will end up with, not just the ones
+  // being changed — an edit that moves the start date past an unchanged end
+  // date is just as wrong as one that sets both.
+  const nextDay = day ?? existing.date;
+  const nextLast = endDate === undefined ? existing.endDate : last;
+  if (nextLast && nextLast < nextDay) {
+    return res.status(400).json({ error: 'The end date cannot be before the start date' });
+  }
+
+  if (title !== undefined && !String(title).trim()) {
+    return res.status(400).json({ error: 'A title is required' });
+  }
+  if (startTime && !TIME_RE.test(String(startTime))) {
+    return res.status(400).json({ error: 'Time must be HH:MM (24-hour)' });
+  }
+
+  const event = await prisma.finEvent.update({
+    where: { id },
+    data: {
+      ...(title !== undefined ? { title: String(title).trim() } : {}),
+      ...(day ? { date: day } : {}),
+      ...(endDate !== undefined ? { endDate: last } : {}),
+      ...(startTime !== undefined ? { startTime: startTime ? String(startTime) : null } : {}),
+      ...(notes !== undefined ? { notes: notes ? String(notes) : null } : {}),
+      ...(userId !== undefined ? { userId: userId || null } : {}),
+    },
+    include: { user: { select: EMBEDDED_USER_SELECT } },
+  });
+  res.json(withPublicUser(event));
+});
+
+app.delete('/api/events/:id', async (req, res) => {
+  const { id } = req.params;
+  await prisma.finEvent.delete({ where: { id } });
+  res.json({ success: true });
+});
+
 // ─── Dashboard Summary ─────────────────────────────────────
 
 app.get('/api/dashboard', async (_req, res) => {

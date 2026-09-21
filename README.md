@@ -10,6 +10,7 @@ Personal finance manager for tracking home finances, personal investments, and l
 - **Investments** — Track stocks, mutual funds, ETFs, bonds, crypto, gold holdings with P&L
 - **Loans** — Track active loans (home, car, personal), record EMI payments, view amortization; edit any loan's terms, change its status, remove a mis-entered payment, or delete it
 - **Budget** — Set monthly budgets per category, track spending progress
+- **Calendar** — A shared household calendar: mark events for either person, colour-coded by owner, with multi-day and timed events (see below)
 - **Users** — Manage household members, their logins and profile pictures
 - **Installable** — a PWA, so it can be added to a phone's home screen and open full screen (see below)
 - **Telegram Bot** — Send a photo of any bill/receipt/UPI screenshot to @inkfin_bot; AI vision extracts merchant, amount, date, and category, then you confirm with one tap
@@ -58,6 +59,7 @@ Tables (all prefixed with `fin_`):
 - `fin_investments` — Investment holdings (stocks, MFs, ETFs, etc.)
 - `fin_loans` — Loan accounts with principal, interest, EMI tracking
 - `fin_loan_payments` — EMI payment history with principal/interest breakdown
+- `fin_events` — Shared household calendar entries (see [Calendar](#calendar))
 
 ## Quick Start
 
@@ -94,11 +96,13 @@ npm run test:auth
 npm run test:avatar  # profile pictures: upload, serve, ETag, every rejection
 npm run test:loans
 npm run test:tx
+npm run test:events  # calendar events: month windows, multi-day overlap, validation
 npm run test:privacy # no endpoint leaks a password hash or an avatar
 npm run test:alerts  # transaction alerts: who is messaged, and who is not
 npm run test:bot     # pure analytics: templates, bucketing, reports
 npm run test:notify  # pure: alert wording, escaping, recipient selection
 npm run test:pwa     # pure: manifest, icons, head tags, the service worker
+npm run test:calendar # pure: the month grid, day bucketing, timezone independence
 npm run icons        # regenerate public/icon-* from scripts/icon-art.mjs
 ```
 
@@ -387,6 +391,65 @@ the committed PNGs still match the art, and checks the manifest, the icons and
 the head tags agree with each other. Removing the `/api` guard from the worker
 makes it fail — that was verified by planting it and reverting.
 
+## Calendar
+
+A shared household calendar at `/calendar`. Both people's events live on one
+grid, colour-coded by owner (`fin_users.color`), so "whose is that?" is answered
+at a glance rather than by opening each one.
+
+- **Month grid**, Sunday-first, with the neighbouring months' days borrowed to
+  fill the first and last weeks. Those borrowed days are dimmed but real: they
+  carry their own events, so a trip crossing a month boundary shows on both
+  sides of it.
+- **Multi-day events** land on *every* day they span, not just the day they
+  start.
+- **Timed or all-day.** An event with no `startTime` is all-day.
+- **Colour-coded by owner**, with a legend above the grid. An event with no owner
+  is grey and labelled *Shared*.
+- **Agenda** for the selected day, plus a **Coming up** list for the next 60
+  days. Clicking a row in it jumps to that day, following it into its month.
+- **Phone layout:** the day cells drop to coloured dots below `sm`, because a
+  chip with a readable title needs ~90px and a 390px phone gives each column
+  ~48px. The agenda below the grid carries the detail.
+- Keyboard accessible: each cell is a real focusable button with a descriptive
+  `aria-label` ("Tuesday, 15 September, 4 events").
+
+### Dates are dates, not instants
+
+`fin_events.date` is stored as **UTC midnight of the intended calendar day**,
+exactly like `fin_transactions.date`. Every calculation in `src/lib/calendar.ts`
+goes through `Date.UTC`, so the grid is identical whether the device is in IST,
+UTC or California — `npm run test:calendar` proves it by recomputing the grid in
+child processes at UTC+14 and UTC−11 and requiring byte-identical output, and by
+scanning the source for local-time getters.
+
+Two traps worth knowing, both of which produced a visibly wrong page before they
+were fixed:
+
+- **The API sends `2026-09-21T00:00:00.000Z`, not `2026-09-21`.** `parseDayKey`
+  rejects the ISO form, so bucketing events with it silently dropped every event
+  the API returned and left the grid empty while the agenda looked fine.
+  `toDayKey` accepts either form; use it for anything that came off the wire.
+- **The fetch must use `gridRange`, not `monthRange`.** The grid shows days from
+  the adjacent months, so asking only for the month leaves the first and last
+  rows empty while the same day shows its events one month over.
+
+### The month window is an overlap, not a containment
+
+`GET /api/events?from=&to=` returns events that **overlap** the window, not ones
+that start inside it — otherwise a trip running 28 Aug – 3 Sep would vanish from
+September's grid. An event qualifies when it starts on or before `to` and reaches
+on or after `from`, with `date` standing in for `endDate` when there is none.
+`npm run test:events` pins that behaviour, and `scripts/events-smoke.mjs` proves
+it against the real API and a real database.
+
+Applied to the database with `prisma/add-events-table.sql` (the Render build only
+runs `prisma generate`, so schema changes are applied by hand):
+
+```bash
+npx prisma db execute --file prisma/add-events-table.sql
+```
+
 ## API Server
 
 The Express API server runs on port 3456 with these endpoints:
@@ -405,6 +468,8 @@ The Express API server runs on port 3456 with these endpoints:
 | GET/POST | `/api/loans` | List / create loans |
 | POST | `/api/loans/:id/payment` | Record loan EMI payment |
 | PUT | `/api/loans/:id` | Update loan status |
+| GET/POST | `/api/events` | List events overlapping a date window / create one |
+| PUT/DELETE | `/api/events/:id` | Update / delete an event |
 
 `POST /api/transactions` accepts two optional headers, `X-Actor-User-Id` and
 `X-Actor-Telegram-Id`, naming who entered the transaction so their alert can be
@@ -417,7 +482,8 @@ by claiming to be them.
 ```
 ink-finance/
 ├── prisma/
-│   └── schema.prisma       # Database models (fin_* tables)
+│   ├── schema.prisma       # Database models (fin_* tables)
+│   └── add-events-table.sql # fin_events — applied by hand (see Calendar)
 ├── shared/
 │   └── notify.ts            # "transaction added" alerts (API + bot share this)
 ├── server/
@@ -438,10 +504,12 @@ ink-finance/
 │   │   └── useInstallState.ts
 │   ├── lib/
 │   │   ├── api.ts           # API client
+│   │   ├── calendar.ts      # Month grid + day bucketing (timezone-free)
 │   │   ├── pwa.ts           # Service-worker registration + install state
 │   │   └── format.ts        # INR formatting helpers
 │   ├── pages/
 │   │   ├── Dashboard.tsx
+│   │   ├── Calendar.tsx     # Shared household calendar
 │   │   ├── Transactions.tsx
 │   │   ├── Investments.tsx
 │   │   ├── Loans.tsx
@@ -457,6 +525,8 @@ ink-finance/
 │   ├── icon-art.mjs         # The app mark, as geometry
 │   ├── generate-icons.mjs   # npm run icons
 │   ├── pwa.test.mjs         # npm run test:pwa
+│   ├── calendar.test.ts     # npm run test:calendar
+│   ├── events-smoke.mjs     # npm run test:events (needs a running API)
 │   ├── run-with-env.mjs     # run a command with layered .env files
 │   └── render-status.mjs    # ping the deployed Render services
 ├── .env.local               # Secrets + local URLs (gitignored)

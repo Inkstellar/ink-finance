@@ -5,9 +5,9 @@ name: CI
 #
 # Deliberately needs no secrets: `prisma generate` reads the schema but never
 # connects, and the tests here are pure. The DB-backed smoke tests
-# (test:privacy, test:tx, test:loans, test:avatar, test:auth) talk to a real
-# Postgres and a running API, so they stay local — run them against a dev
-# server before merging.
+# (test:privacy, test:tx, test:loans, test:avatar, test:auth, test:events) talk
+# to a real Postgres and a running API, so they stay local — run them against a
+# dev server before merging.
 
 on:
   pull_request:
@@ -55,6 +55,9 @@ jobs:
 
       - name: PWA manifest, icons and service worker
         run: npm run test:pwa
+
+      - name: Calendar grid, day bucketing and timezone independence
+        run: npm run test:calendar
 
       - name: Build the web bundle and the server
         run: npm run build && npm run build:server

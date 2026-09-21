@@ -41,7 +41,9 @@
     "test:notify": "tsx scripts/notify.test.ts",
     "test:alerts": "node scripts/transaction-alert-smoke.mjs",
     "test:link": "tsx scripts/telegram-link.test.ts",
-    "test:pwa": "node scripts/pwa.test.mjs"
+    "test:pwa": "node scripts/pwa.test.mjs",
+    "test:calendar": "tsx scripts/calendar.test.ts",
+    "test:events": "node scripts/events-smoke.mjs"
   },
   "dependencies": {
     "@auth/express": "^0.12.3",

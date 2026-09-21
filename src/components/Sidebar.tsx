@@ -18,6 +18,7 @@ import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
 import { Link, useLocation } from 'react-router-dom';
 import DashboardIcon from '@mui/icons-material/Dashboard';
+import CalendarMonthIcon from '@mui/icons-material/CalendarMonth';
 import ReceiptIcon from '@mui/icons-material/Receipt';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
@@ -39,6 +40,7 @@ const navGroups = [
     title: 'Overview',
     items: [
       { label: 'Dashboard', path: '/', icon: <DashboardIcon /> },
+      { label: 'Calendar', path: '/calendar', icon: <CalendarMonthIcon /> },
     ],
   },
   {
@@ -168,13 +170,25 @@ function SidebarContent({ user, onClose }: SidebarContentProps) {
                       sx={{
                         mx: 1,
                         mb: 0.25,
-                        borderRadius: 2,
+                        // Square corners on purpose: the active and hover
+                        // backgrounds are flat blocks, not pills.
+                        borderRadius: 0,
                         px: 2,
                         minHeight: 48,
                         ...(active && {
-                          bgcolor: 'primary.main',
-                          color: 'white',
-                          '& .MuiListItemIcon-root': { color: 'white' },
+                          // `&.Mui-selected`, not a bare `bgcolor`. ListItemButton
+                          // sets its own selected background through a two-class
+                          // selector, which outranks a single sx class — so the
+                          // background silently stayed at action.selected while
+                          // `color: 'white'` below did apply, leaving white text
+                          // on near-white (about 1.1:1, i.e. invisible). Naming
+                          // the class here wins the specificity contest.
+                          '&.Mui-selected': {
+                            bgcolor: 'primary.main',
+                            color: 'white',
+                            '& .MuiListItemIcon-root': { color: 'white' },
+                            '&:hover': { bgcolor: 'primary.dark' },
+                          },
                         }),
                         '&:hover': {
                           ...(active

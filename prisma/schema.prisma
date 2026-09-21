@@ -92,6 +92,7 @@ model FinUser {
 
   transactions FinTransaction[]
   loans        FinLoan[]
+  events       FinEvent[]
 
   @@map("fin_users")
 }
@@ -215,4 +216,36 @@ model FinLoanPayment {
   createdAt   DateTime @default(now())
 
   @@map("fin_loan_payments")
+}
+
+// ─── Events (shared calendar) ───────────────────────────────
+
+// A household calendar entry. Deliberately not a finance table: it holds
+// things like a bill due date, a salary credit, an appointment or a trip, so
+// both people can see what the other has on.
+//
+// `date` is stored as UTC midnight of the *intended calendar day*, exactly like
+// FinTransaction.date — never a wall-clock instant. That is what makes the
+// month grid timezone-independent: a day key is a date, not a moment, and
+// reading it back with an unpinned formatter would show the previous day.
+model FinEvent {
+  id        String    @id @default(cuid())
+  title     String
+  date      DateTime
+  // Inclusive last day of a multi-day event (a trip, a visit). Null means the
+  // event is a single day, which is the common case.
+  endDate   DateTime?
+  // "HH:MM" in 24-hour IST, or null for an all-day event. Kept as a string
+  // rather than a DateTime because it is a time-of-day, not a point in time —
+  // storing it as a timestamp would drag a timezone along with it and shift.
+  startTime String?
+  notes     String?
+  userId    String?
+  user      FinUser?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  // The calendar only ever asks for one month (or an agenda window) at a time.
+  @@index([date])
+  @@map("fin_events")
 }
