@@ -23,6 +23,9 @@ prisma/migrations/
 # WorkBuddy workspace state
 .workbuddy-ai/memory/
 
+# Database backups — these contain real financial data
+backups/
+
 # Logs
 *.log
 npm-debug.log*

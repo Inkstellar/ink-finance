@@ -61,6 +61,41 @@ Tables (all prefixed with `fin_`):
 - `fin_loan_payments` — EMI payment history with principal/interest breakdown
 - `fin_events` — Shared household calendar entries (see [Calendar](#calendar))
 
+### Backups
+
+```bash
+npm run db:backup                            # → backups/ink-finance-<timestamp>.json
+npm run db:backup -- --out path.json         # choose the destination
+npm run db:backup -- --inspect path.json     # summarise a backup, change nothing
+npm run db:backup -- --restore path.json --yes
+```
+
+**This exists because there was no backup.** In September 2026 a set of loans was
+found to be missing, and every recovery route turned out to be closed: Neon
+refuses `pageinspect` (it needs superuser, which Neon does not grant) so the
+deleted rows could not be read back out of the heap even though they were still
+physically there; Render keeps only a few hours of logs and does not log
+requests; and the point-in-time window is a branch property that is not readable
+from SQL. The root cause was the boring one — nothing had ever been saved.
+
+Dumping is **read-only** (`SELECT` only). The file holds every `fin_*` table plus
+the column types needed to decode it, and it is **real financial data**, so
+`backups/` is gitignored — keep it out of the repository.
+
+Restoring is opt-in twice over. It needs `--restore` *and* `--yes`, and it skips
+any table that already contains rows unless `--force` is also passed. Conflicts
+on a primary key are ignored (`ON CONFLICT DO NOTHING`), so a restore can never
+clobber a live row; the rows are inserted in foreign-key order (`fin_users`
+before `fin_accounts` before `fin_loans` before `fin_loan_payments`) so the
+constraints hold.
+
+Timestamps round-trip as **exact instants**. Dates in this app are calendar days
+stored as UTC midnight, so an encoder that reached for a local-time formatter
+would shift every date by a day. `npm run test:backup` (62 checks) pins that two
+ways: it scans `scripts/backup-format.mjs` for local-time APIs, and it re-encodes
+a date in child processes pinned to `Pacific/Kiritimati` (+14), `Pacific/Midway`
+(−11), `America/New_York` and `UTC`, requiring identical output.
+
 ## Quick Start
 
 ```bash
@@ -103,6 +138,7 @@ npm run test:bot     # pure analytics: templates, bucketing, reports
 npm run test:notify  # pure: alert wording, escaping, recipient selection
 npm run test:pwa     # pure: manifest, icons, head tags, the service worker
 npm run test:calendar # pure: the month grid, day bucketing, timezone independence
+npm run test:backup  # pure: backup encode/decode, and dates that must not shift
 npm run icons        # regenerate public/icon-* from scripts/icon-art.mjs
 ```
 
@@ -527,6 +563,9 @@ ink-finance/
 │   ├── pwa.test.mjs         # npm run test:pwa
 │   ├── calendar.test.ts     # npm run test:calendar
 │   ├── events-smoke.mjs     # npm run test:events (needs a running API)
+│   ├── db-backup.mjs        # npm run db:backup — dump / inspect / restore
+│   ├── backup-format.mjs    # pure encode/decode for the backup file
+│   ├── backup-format.test.mjs # npm run test:backup
 │   ├── run-with-env.mjs     # run a command with layered .env files
 │   └── render-status.mjs    # ping the deployed Render services
 ├── .env.local               # Secrets + local URLs (gitignored)

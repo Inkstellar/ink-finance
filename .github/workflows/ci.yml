@@ -59,5 +59,8 @@ jobs:
       - name: Calendar grid, day bucketing and timezone independence
         run: npm run test:calendar
 
+      - name: Backup format encoding and timezone independence
+        run: npm run test:backup
+
       - name: Build the web bundle and the server
         run: npm run build && npm run build:server

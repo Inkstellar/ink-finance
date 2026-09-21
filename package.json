@@ -31,6 +31,7 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed": "prisma db execute --file prisma/seed.sql",
+    "db:backup": "node scripts/db-backup.mjs",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "test:bot": "tsx scripts/bot-analytics.test.ts",
@@ -43,7 +44,8 @@
     "test:link": "tsx scripts/telegram-link.test.ts",
     "test:pwa": "node scripts/pwa.test.mjs",
     "test:calendar": "tsx scripts/calendar.test.ts",
-    "test:events": "node scripts/events-smoke.mjs"
+    "test:events": "node scripts/events-smoke.mjs",
+    "test:backup": "node scripts/backup-format.test.mjs"
   },
   "dependencies": {
     "@auth/express": "^0.12.3",
