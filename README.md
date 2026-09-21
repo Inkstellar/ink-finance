@@ -242,7 +242,7 @@ the Loans page if you need to split interest).
 
 Reports show totals in and out, a by-category breakdown, then the rows themselves.
 
-### Transaction alerts
+### Alerts
 
 Whenever a transaction is added, every *other* user is messaged on Telegram —
 whoever entered it is left out, since being told about your own action is
@@ -269,10 +269,35 @@ account's new balance, and who added it, with a button back into the app:
 👤 Added by Kousi
 ```
 
+**Loans alert too**, because a loan is not a transaction: recording a payment
+from the web UI updates the loan and creates nothing else, so without its own
+alert the other person would never hear about it.
+
+```
+🏦 Loan payment
+
+💸 -₹43,391.00
+📝 Housing loan
+   principal ₹40,000.00 · interest ₹3,391.00
+📉 Outstanding now ₹49,56,609.00
+📅 21 Sep 2026
+
+✍️ Recorded by Kousi
+```
+
+Adding a loan says so, with the lender, tenure, rate and EMI. **Deleting** one
+says so as well — a shared record of debt should not disappear quietly.
+
+One action produces one message. The bot's `loanpay` template creates a
+transaction *and* a payment on the loan, so it marks the transaction
+`X-Suppress-Alert: 1` and lets the loan alert through, because that is the one
+carrying the outstanding balance. The header is honoured only from a caller
+holding the service token, like the actor headers below.
+
 Only users with a Telegram id set on the Users page receive alerts. The wording
 lives in `shared/notify.ts`, imported by both the API and the bot, so the two
 paths cannot drift. Alerts are sent *after* the response and never throw: a
-Telegram failure cannot fail the transaction that caused it.
+Telegram failure cannot fail the write that caused it.
 
 Set `WEB_URL` on the API service for the "Open in app" button; without it the
 alert is sent without the button.
@@ -283,7 +308,8 @@ into the Users page looks correct and silently breaks alerts. You do not have to
 copy the number yourself: the numeric id is only knowable while someone is
 talking to the bot, so **the first message either of you sends the bot upgrades
 their stored `@username` to the numeric id automatically** (`telegram-bot/link.ts`).
-Send `/start` once and alerts start working.
+Send `/start` once and alerts start working — and `/start` will tell you which
+of the two states you are in.
 
 ## API Server
 

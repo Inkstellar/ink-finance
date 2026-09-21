@@ -101,14 +101,22 @@ export class FinanceApiClient {
    * alert and has to know who to leave out — being told about your own entry is
    * noise. The bot has no session, so it passes the actor as headers; the API
    * honours them only from a caller holding the service token.
+   *
+   * `suppressAlert` says "do not announce this, I am announcing it myself" —
+   * used for a loan payment, which alerts again when the payment is recorded.
    */
   async createTransaction(
     payload: CreateTransactionPayload,
-    actor?: { userId?: string | null; telegramId?: string | number | null },
+    actor?: {
+      userId?: string | null;
+      telegramId?: string | number | null;
+      suppressAlert?: boolean;
+    },
   ): Promise<Record<string, unknown>> {
     const headers: Record<string, string> = {};
     if (actor?.userId) headers['X-Actor-User-Id'] = actor.userId;
     if (actor?.telegramId != null) headers['X-Actor-Telegram-Id'] = String(actor.telegramId);
+    if (actor?.suppressAlert) headers['X-Suppress-Alert'] = '1';
     return this.postJson('/api/transactions', payload, headers);
   }
 

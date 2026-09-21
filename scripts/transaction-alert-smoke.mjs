@@ -154,6 +154,7 @@ async function main() {
   });
 
   const txIds = [];
+  let loanId = null;
 
   try {
     // ── 1. A browser session creates a transaction ────────
@@ -282,9 +283,131 @@ async function main() {
     check('a session cannot spoof the actor to silence an alert', to(tgB).length === 1,
       `${to(tgB).length} message(s) to the other user`);
     check('and the real actor is still left out', to(tgA).length === 0, `${to(tgA).length} message(s)`);
+
+    // ── 4. A loan is added ────────────────────────────────
+    // A loan is not a transaction, and adding one from the web UI creates no
+    // transaction either — so this needs its own alert or nobody hears.
+    sent.length = 0;
+    {
+      const res = await fetch(`${BASE}/api/loans`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', cookie: jar.header() },
+        body: JSON.stringify({
+          name: `${mark}-Housing loan`,
+          lender: 'HDFC Bank',
+          principal: 5000000,
+          interestRate: 8.5,
+          tenureMonths: 240,
+          monthlyEmi: 43391,
+          disbursedOn: '2026-09-20',
+          accountId: account.id,
+          userId: actor.id,
+        }),
+      });
+      const loan = await res.json().catch(() => ({}));
+      check('the loan was created', res.status === 200, `got ${res.status}`);
+      if (loan.id) loanId = loan.id;
+    }
+
+    await waitFor(() => to(tgB).length > 0, 'the loan alert');
+    check('the other user hears about a new loan', to(tgB).length === 1, `${to(tgB).length} message(s)`);
+    check('and the actor does not', to(tgA).length === 0, `${to(tgA).length} message(s)`);
+    if (to(tgB).length) {
+      const msg = to(tgB)[0];
+      check('the loan alert names the loan', msg.text.includes('Housing loan'));
+      check('the loan alert shows the principal', msg.text.includes('₹50,00,000.00'));
+      check('the loan alert gives the terms', msg.text.includes('20 years · at 8.5% · EMI ₹43,391.00'));
+      check('the loan alert links to the loans page',
+        msg.reply_markup?.inline_keyboard?.[0]?.[0]?.url ===
+          'https://ink-finance-web.onrender.com/loans');
+    }
+
+    // ── 5. A payment is recorded against it ───────────────
+    // The web UI records this without creating a transaction, so without an
+    // alert of its own the loan would move in silence.
+    sent.length = 0;
+    {
+      const res = await fetch(`${BASE}/api/loans/${loanId}/payment`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', cookie: jar.header() },
+        body: JSON.stringify({
+          amount: 43391,
+          principal: 40000,
+          interest: 3391,
+          balance: 4956609,
+          paidOn: '2026-09-21',
+        }),
+      });
+      check('the payment was recorded', res.status === 200, `got ${res.status}`);
+    }
+
+    await waitFor(() => to(tgB).length > 0, 'the payment alert');
+    check('the other user hears about the payment', to(tgB).length === 1, `${to(tgB).length} message(s)`);
+    if (to(tgB).length) {
+      const msg = to(tgB)[0];
+      check('the payment alert shows the amount', msg.text.includes('-₹43,391.00'));
+      check('it splits principal and interest',
+        msg.text.includes('principal ₹40,000.00 · interest ₹3,391.00'));
+      check('it shows the new outstanding', msg.text.includes('Outstanding now ₹49,56,609.00'));
+    }
+
+    // ── 6. The bot suppresses the transaction alert for an EMI ──
+    // The bot's `loanpay` template creates a transaction *and* a payment on the
+    // loan. Both would alert; one action must produce one message, and the loan
+    // one wins because it carries the outstanding balance.
+    sent.length = 0;
+    {
+      const res = await fetch(`${BASE}/api/transactions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Service-Token': process.env.SERVICE_TOKEN,
+          'X-Actor-Telegram-Id': tgB,
+          'X-Suppress-Alert': '1',
+        },
+        body: JSON.stringify({
+          amount: 43391,
+          type: 'LOAN_PAYMENT',
+          date: '2026-09-21',
+          description: 'EMI (suppressed)',
+          accountId: account.id,
+          userId: actor.id,
+        }),
+      });
+      check('a suppressed transaction is still created', res.status === 200, `got ${res.status}`);
+      txIds.push((await res.json()).id);
+    }
+
+    // Give a message that should not be sent time to arrive, so the assertion
+    // is not passing merely because the request has not finished yet.
+    await new Promise((r) => setTimeout(r, 2500));
+    check('a suppressed transaction sends no alert', sent.length === 0, `${sent.length} message(s)`);
+
+    // ── 7. The loan is deleted ────────────────────────────
+    sent.length = 0;
+    {
+      const res = await fetch(`${BASE}/api/loans/${loanId}`, {
+        method: 'DELETE',
+        headers: { cookie: jar.header() },
+      });
+      check('the loan was deleted', res.status === 200, `got ${res.status}`);
+      loanId = null;
+    }
+
+    await waitFor(() => to(tgB).length > 0, 'the deletion alert');
+    check('the other user hears about a deletion', to(tgB).length === 1, `${to(tgB).length} message(s)`);
+    if (to(tgB).length) {
+      const msg = to(tgB)[0];
+      check('the deletion alert says so', msg.text.includes('Loan deleted'));
+      check('it says what was owed', msg.text.includes('Was ₹50,00,000.00, outstanding ₹49,56,609.00'));
+    }
   } finally {
     api.kill('SIGTERM');
     stub.close();
+    if (loanId) {
+      // Payments cascade with the loan.
+      await prisma.finLoan.delete({ where: { id: loanId } }).catch(() => {});
+    }
     for (const id of txIds) {
       await prisma.finTransaction.delete({ where: { id } }).catch(() => {});
     }
@@ -292,7 +415,8 @@ async function main() {
     await prisma.finUser.delete({ where: { id: actor.id } }).catch(() => {});
     await prisma.finUser.delete({ where: { id: other.id } }).catch(() => {});
     const left = await prisma.finUser.count({ where: { name: { startsWith: 'Alert ' } } });
-    console.log(`\n  cleaned up — leftover test users: ${left}\n`);
+    const loans = await prisma.finLoan.count({ where: { name: { contains: mark } } });
+    console.log(`\n  cleaned up — leftover test users: ${left}, loans: ${loans}\n`);
     await prisma.$disconnect();
   }
 

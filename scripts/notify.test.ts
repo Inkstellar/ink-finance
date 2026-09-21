@@ -9,10 +9,13 @@
  * get subtly wrong and impossible to notice by hand.
  */
 import {
+  buildLoanMessage,
   buildMessage,
   escapeHtml,
   formatAmount,
   formatDay,
+  formatTenure,
+  notifyLoan,
   notifyTransaction,
   selectRecipients,
   telegramApiBase,
@@ -170,6 +173,93 @@ async function main() {
     eq('a whitespace telegram id counts as missing', r.recipients.length, 0);
   }
 
+  // ── Loan messages ────────────────────────────────────────
+  console.log('\n  loan messages');
+  eq('whole years read as years', formatTenure(24), '2 years');
+  eq('one year is singular', formatTenure(12), '1 year');
+  eq('a partial year stays in months', formatTenure(18), '18 months');
+  eq('months below a year stay months', formatTenure(6), '6 months');
+  {
+    const text = buildLoanMessage({
+      event: 'created',
+      name: 'Housing loan',
+      principal: 5000000,
+      lender: 'HDFC Bank',
+      interestRate: 8.5,
+      tenureMonths: 240,
+      monthlyEmi: 43391,
+      disbursedOn: '2026-09-20',
+      ownerName: 'Kousi',
+      actorName: 'Kousi',
+    });
+    ok('a new loan says so', text.includes('New loan'));
+    ok('it shows the principal', text.includes('₹50,00,000.00'));
+    ok('it names the loan', text.includes('Housing loan'));
+    ok('it names the lender', text.includes('🏛 HDFC Bank'));
+    ok('it gives the terms', text.includes('20 years · at 8.5% · EMI ₹43,391.00'), text);
+    ok('it dates the disbursal', text.includes('Disbursed 20 Sep 2026'));
+    ok('it names who it is for', text.includes('👤 For Kousi'));
+    ok('it names who added it', text.includes('Added by <b>Kousi</b>'));
+  }
+  {
+    const text = buildLoanMessage({
+      event: 'created', name: 'Top-up', principal: 100000, actorName: null,
+    });
+    ok('a bare loan still reads', text.includes('Top-up') && text.includes('₹1,00,000.00'));
+    ok('no lender line when there is no lender', !text.includes('🏛'));
+    ok('no terms line when there are no terms', !text.includes('📆'));
+    ok('no owner line when there is no owner', !text.includes('👤 For'));
+    ok('an unknown actor still reads', text.includes('Added by <b>someone</b>'));
+  }
+  {
+    const text = buildLoanMessage({
+      event: 'payment',
+      name: 'Housing loan',
+      amount: 43391,
+      paymentPrincipal: 40000,
+      paymentInterest: 3391,
+      outstandingAfter: 4956609,
+      paidOn: '2026-09-20',
+      actorName: 'Kousi',
+    });
+    ok('a payment says so', text.includes('Loan payment'));
+    ok('it shows the amount as an outflow', text.includes('-₹43,391.00'));
+    ok('it splits principal and interest', text.includes('principal ₹40,000.00 · interest ₹3,391.00'), text);
+    ok('it shows the new outstanding', text.includes('Outstanding now ₹49,56,609.00'));
+    ok('it dates the payment', text.includes('20 Sep 2026'));
+    ok('it says recorded, not added', text.includes('Recorded by <b>Kousi</b>'));
+  }
+  {
+    const text = buildLoanMessage({
+      event: 'payment',
+      name: 'Housing loan',
+      amount: 2076,
+      outstandingAfter: 100000,
+      paidOn: '2026-09-20',
+      actorName: 'Preeti',
+    });
+    ok('no split line when there is no split', !text.includes('principal '));
+    ok('a payment without a split still reads', text.includes('-₹2,076.00'));
+  }
+  {
+    const text = buildLoanMessage({
+      event: 'deleted',
+      name: 'Car loan',
+      principal: 800000,
+      outstanding: 512000,
+      actorName: 'Kousi',
+    });
+    ok('a deletion says so', text.includes('Loan deleted'));
+    ok('it says what was owed', text.includes('Was ₹8,00,000.00, outstanding ₹5,12,000.00'), text);
+    ok('it says deleted, not added', text.includes('Deleted by <b>Kousi</b>'));
+  }
+  {
+    const text = buildLoanMessage({
+      event: 'created', name: '<b>Rich</b> & Co', principal: 1, actorName: null,
+    });
+    ok('a loan name cannot inject HTML', text.includes('&lt;b&gt;Rich&lt;/b&gt; &amp; Co'), text);
+  }
+
   // ── Sending ──────────────────────────────────────────────
   console.log('\n  sending');
   {
@@ -237,6 +327,50 @@ async function main() {
     // the failure mode that makes this feature look like it works when it does
     // not, so it has to be visible in the counts.
     eq('a missing token is reported, not swallowed', res.failed, 2);
+  }
+
+  {
+    const { impl, calls } = stubFetch();
+    const res = await notifyLoan({
+      users, actorUserId: 'u1', botToken: 'TEST', fetchImpl: impl,
+      webUrl: 'https://ink-finance-web.onrender.com/loans',
+      notice: {
+        event: 'deleted', name: 'Car loan', principal: 800000, outstanding: 512000, actorName: 'Kousi',
+      },
+    });
+    eq('a loan alert reaches the other user only', calls.map((c) => c.body.chat_id), ['222']);
+    eq('it is HTML too', calls[0].body.parse_mode, 'HTML');
+    eq('it carries the loan wording', calls[0].body.text.includes('Loan deleted'), true);
+    eq('its button points at the loans page',
+      calls[0].body.reply_markup.inline_keyboard[0][0].url,
+      'https://ink-finance-web.onrender.com/loans');
+    eq('and it counts as sent', res.sent, 1);
+  }
+  {
+    const { impl, calls } = stubFetch();
+    await notifyLoan({
+      users, notice: { event: 'created', name: 'X', principal: 1, actorName: null },
+      botToken: 'TEST', fetchImpl: impl,
+    });
+    eq('a loan alert with no actor tells everyone linked', calls.map((c) => c.body.chat_id), ['111', '222']);
+  }
+  {
+    const { impl, calls } = stubFetch();
+    await notifyLoan({
+      users, actorTelegramId: '222', botToken: 'TEST', fetchImpl: impl,
+      notice: { event: 'created', name: 'X', principal: 1, actorName: null },
+    });
+    eq('a loan alert excludes the telegram actor', calls.map((c) => c.body.chat_id), ['111']);
+  }
+  {
+    const { impl, calls } = stubFetch();
+    await notifyTransaction({
+      users, notice: notice(), actorUserId: 'u1', botToken: 'TEST', fetchImpl: impl,
+      webUrl: 'https://ink-finance-web.onrender.com/transactions',
+    });
+    eq('a transaction alert still points at the transactions page',
+      calls[0].body.reply_markup.inline_keyboard[0][0].url,
+      'https://ink-finance-web.onrender.com/transactions');
   }
 
   // ── Transport override ───────────────────────────────────

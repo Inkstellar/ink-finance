@@ -8,7 +8,7 @@ import { PrismaClient } from '@prisma/client';
 import { ExpressAuth } from '@auth/express';
 import { authConfig } from './auth.js';
 import { currentUserId, isServiceCall, requireApiAuth } from './auth-middleware.js';
-import { notifyTransaction } from '../shared/notify.js';
+import { notifyLoan, notifyTransaction, type NotifyResult } from '../shared/notify.js';
 
 const prisma = new PrismaClient();
 const app = express();
@@ -503,9 +503,11 @@ app.post('/api/transactions', async (req, res) => {
   res.json(withPublicUser(tx));
 
   // Deliberately not awaited — see announceTransaction.
-  announceTransaction(tx, resolveActor(req)).catch((err) =>
-    console.error('[notify] unexpected failure:', err),
-  );
+  if (!alertsSuppressed(req)) {
+    announceTransaction(tx, resolveActor(req)).catch((err) =>
+      console.error('[notify] unexpected failure:', err),
+    );
+  }
 });
 
 app.delete('/api/transactions/:id', async (req, res) => {
@@ -567,6 +569,37 @@ interface AnnounceableTransaction {
 }
 
 /**
+ * True when the caller has already announced this event itself.
+ *
+ * Only honoured from a service-token caller. The bot's `loanpay` template
+ * creates a transaction *and* a payment on the loan; both would alert, and one
+ * action producing two messages is noise. It suppresses the transaction alert
+ * and lets the loan one through, because that is the message carrying the
+ * outstanding balance.
+ */
+function alertsSuppressed(req: express.Request): boolean {
+  return isServiceCall(req) && req.get('x-suppress-alert') === '1';
+}
+
+/** Everyone who might need telling, plus the actor's display name. */
+async function alertAudience(actor: { userId?: string; telegramId?: string }) {
+  const users = await prisma.finUser.findMany({
+    select: { id: true, name: true, telegramId: true },
+    orderBy: { name: 'asc' },
+  });
+  return { users, actorName: users.find((u) => u.id === actor.userId)?.name ?? null };
+}
+
+/** One log line per alert, so a silent failure is visible in the service log. */
+function logAlert(what: string, id: string, result: NotifyResult): void {
+  const skipped = result.skipped.map((s) => `${s.name} (${s.reason})`).join(', ');
+  console.log(
+    `[notify] ${what} ${id.slice(-6)} — sent ${result.sent}, failed ${result.failed}` +
+      (skipped ? `, skipped: ${skipped}` : ''),
+  );
+}
+
+/**
  * Tell the other users a transaction was added.
  *
  * Every user with a Telegram id hears about it except whoever entered it —
@@ -581,10 +614,7 @@ async function announceTransaction(
   tx: AnnounceableTransaction,
   actor: { userId?: string; telegramId?: string },
 ): Promise<void> {
-  const users = await prisma.finUser.findMany({
-    select: { id: true, name: true, telegramId: true },
-    orderBy: { name: 'asc' },
-  });
+  const { users, actorName } = await alertAudience(actor);
 
   // Re-read: the balances moved after the row was inserted, and the new figure
   // is the interesting one.
@@ -607,16 +637,117 @@ async function announceTransaction(
       accountName: account?.name ?? null,
       toAccountName: toAccount?.name ?? null,
       ownerName: tx.user?.name ?? null,
-      actorName: users.find((u) => u.id === actor.userId)?.name ?? null,
+      actorName,
       balanceAfter: account?.balance ?? null,
     },
   });
 
-  const skipped = result.skipped.map((s) => `${s.name} (${s.reason})`).join(', ');
-  console.log(
-    `[notify] ${tx.type} ${tx.id.slice(-6)} — sent ${result.sent}, failed ${result.failed}` +
-      (skipped ? `, skipped: ${skipped}` : ''),
-  );
+  logAlert(tx.type, tx.id, result);
+}
+
+interface AnnounceableLoan {
+  id: string;
+  name: string;
+  lender: string | null;
+  principal: number;
+  interestRate: number | null;
+  tenureMonths: number | null;
+  monthlyEmi: number | null;
+  disbursedOn: Date;
+  remainingPrincipal: number;
+  user?: { name: string } | null;
+}
+
+/** A loan was added. */
+async function announceLoan(
+  loan: AnnounceableLoan,
+  actor: { userId?: string; telegramId?: string },
+): Promise<void> {
+  const { users, actorName } = await alertAudience(actor);
+
+  const result = await notifyLoan({
+    users,
+    actorUserId: actor.userId ?? null,
+    actorTelegramId: actor.telegramId ?? null,
+    webUrl: WEB_URL ? `${WEB_URL}/loans` : null,
+    notice: {
+      event: 'created',
+      name: loan.name,
+      principal: loan.principal,
+      lender: loan.lender,
+      interestRate: loan.interestRate,
+      tenureMonths: loan.tenureMonths,
+      monthlyEmi: loan.monthlyEmi,
+      disbursedOn: istDay(loan.disbursedOn),
+      ownerName: loan.user?.name ?? null,
+      actorName,
+    },
+  });
+
+  logAlert('LOAN', loan.id, result);
+}
+
+/**
+ * A payment was recorded against a loan.
+ *
+ * Worth its own alert because recording one from the web UI creates no
+ * transaction — the loan moves and nothing else does.
+ */
+async function announceLoanPayment(
+  loan: { id: string; name: string },
+  payment: {
+    amount: number;
+    principal: number | null;
+    interest: number | null;
+    balance: number;
+    paidOn: Date;
+  },
+  actor: { userId?: string; telegramId?: string },
+): Promise<void> {
+  const { users, actorName } = await alertAudience(actor);
+
+  const result = await notifyLoan({
+    users,
+    actorUserId: actor.userId ?? null,
+    actorTelegramId: actor.telegramId ?? null,
+    webUrl: WEB_URL ? `${WEB_URL}/loans` : null,
+    notice: {
+      event: 'payment',
+      name: loan.name,
+      amount: payment.amount,
+      paymentPrincipal: payment.principal,
+      paymentInterest: payment.interest,
+      outstandingAfter: payment.balance,
+      paidOn: istDay(payment.paidOn),
+      actorName,
+    },
+  });
+
+  logAlert('LOAN_PAYMENT', loan.id, result);
+}
+
+/** A loan was deleted. Announced: a shared record of debt should not vanish quietly. */
+async function announceLoanDeleted(
+  loan: { id: string; name: string; principal: number; remainingPrincipal: number },
+  actor: { userId?: string; telegramId?: string },
+): Promise<void> {
+  const { users, actorName } = await alertAudience(actor);
+
+  const result = await notifyLoan({
+    users,
+    actorUserId: actor.userId ?? null,
+    actorTelegramId: actor.telegramId ?? null,
+    webUrl: WEB_URL ? `${WEB_URL}/loans` : null,
+    notice: {
+      event: 'deleted',
+      name: loan.name,
+      principal: loan.principal,
+      outstanding: loan.remainingPrincipal,
+      actorName,
+    },
+  });
+
+  logAlert('LOAN_DELETED', loan.id, result);
 }
 
 // ─── Budgets ────────────────────────────────────────────────
@@ -711,6 +842,12 @@ app.post('/api/loans', async (req, res) => {
     include: { user: { select: EMBEDDED_USER_SELECT }, payments: true },
   });
   res.json(withPublicUser(loan));
+
+  if (!alertsSuppressed(req)) {
+    announceLoan(loan, resolveActor(req)).catch((err) =>
+      console.error('[notify] unexpected failure:', err),
+    );
+  }
 });
 
 app.post('/api/loans/:id/payment', async (req, res) => {
@@ -719,11 +856,19 @@ app.post('/api/loans/:id/payment', async (req, res) => {
   const payment = await prisma.finLoanPayment.create({
     data: { loanId: id, amount, principal, interest, balance, paidOn: new Date(paidOn) },
   });
-  await prisma.finLoan.update({
+  const loan = await prisma.finLoan.update({
     where: { id },
     data: { remainingPrincipal: balance },
   });
   res.json(payment);
+
+  // Recording a payment from the web UI creates no transaction, so without this
+  // the loan would move and the other person would never hear about it.
+  if (!alertsSuppressed(req)) {
+    announceLoanPayment(loan, payment, resolveActor(req)).catch((err) =>
+      console.error('[notify] unexpected failure:', err),
+    );
+  }
 });
 
 /**
@@ -761,8 +906,16 @@ app.put('/api/loans/:id', async (req, res) => {
 /** Deletes the loan; its payments go with it (cascade). */
 app.delete('/api/loans/:id', async (req, res) => {
   const { id } = req.params;
+  // Read it first: after the delete there is nothing left to describe.
+  const loan = await prisma.finLoan.findUnique({ where: { id } });
   await prisma.finLoan.delete({ where: { id } });
   res.json({ success: true });
+
+  if (loan && !alertsSuppressed(req)) {
+    announceLoanDeleted(loan, resolveActor(req)).catch((err) =>
+      console.error('[notify] unexpected failure:', err),
+    );
+  }
 });
 
 /**

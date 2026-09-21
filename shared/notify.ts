@@ -190,14 +190,149 @@ export interface NotifyOptions {
   timeoutMs?: number;
 }
 
+// ── Loans ───────────────────────────────────────────────────
+// A loan is not a transaction, but it moves the same money, and the two
+// recorded from the web UI do not create one: recording a payment updates the
+// loan and nothing else. Without its own alert, the other person never hears.
+
+export type LoanNotice =
+  | {
+      event: 'created';
+      name: string;
+      principal: number;
+      lender?: string | null;
+      interestRate?: number | null;
+      tenureMonths?: number | null;
+      monthlyEmi?: number | null;
+      disbursedOn?: string | null;
+      ownerName?: string | null;
+      actorName?: string | null;
+    }
+  | {
+      event: 'payment';
+      name: string;
+      amount: number;
+      paymentPrincipal?: number | null;
+      paymentInterest?: number | null;
+      /** Outstanding after this payment. */
+      outstandingAfter: number;
+      paidOn: string;
+      actorName?: string | null;
+    }
+  | {
+      event: 'deleted';
+      name: string;
+      principal: number;
+      outstanding: number;
+      actorName?: string | null;
+    };
+
+/** `18` → `18 months`, `24` → `2 years`. */
+export function formatTenure(months: number): string {
+  if (months % 12 === 0) {
+    const years = months / 12;
+    return `${years} ${years === 1 ? 'year' : 'years'}`;
+  }
+  return `${months} months`;
+}
+
+export function buildLoanMessage(notice: LoanNotice): string {
+  const lines: string[] = [];
+
+  if (notice.event === 'created') {
+    lines.push('🏦 <b>New loan</b>', '');
+    lines.push(`💵 <b>${formatAmount(notice.principal)}</b>`);
+    lines.push(`📝 ${escapeHtml(notice.name)}`);
+    if (notice.lender) lines.push(`🏛 ${escapeHtml(notice.lender)}`);
+
+    const terms: string[] = [];
+    if (notice.tenureMonths) terms.push(formatTenure(notice.tenureMonths));
+    if (typeof notice.interestRate === 'number') terms.push(`at ${notice.interestRate}%`);
+    if (typeof notice.monthlyEmi === 'number') terms.push(`EMI ${formatAmount(notice.monthlyEmi)}`);
+    if (terms.length) lines.push(`📆 ${escapeHtml(terms.join(' · '))}`);
+
+    if (notice.disbursedOn) lines.push(`🗓 Disbursed ${formatDay(notice.disbursedOn)}`);
+    if (notice.ownerName) lines.push(`👤 For ${escapeHtml(notice.ownerName)}`);
+    lines.push(`\n✍️ Added by <b>${escapeHtml(notice.actorName || 'someone')}</b>`);
+    return lines.join('\n');
+  }
+
+  if (notice.event === 'payment') {
+    lines.push('🏦 <b>Loan payment</b>', '');
+    lines.push(`💸 <b>-${formatAmount(notice.amount)}</b>`);
+    lines.push(`📝 ${escapeHtml(notice.name)}`);
+
+    const split: string[] = [];
+    if (typeof notice.paymentPrincipal === 'number') {
+      split.push(`principal ${formatAmount(notice.paymentPrincipal)}`);
+    }
+    if (typeof notice.paymentInterest === 'number') {
+      split.push(`interest ${formatAmount(notice.paymentInterest)}`);
+    }
+    if (split.length) lines.push(`   ${escapeHtml(split.join(' · '))}`);
+
+    lines.push(`📉 Outstanding now ${formatAmount(notice.outstandingAfter)}`);
+    lines.push(`📅 ${formatDay(notice.paidOn)}`);
+    lines.push(`\n✍️ Recorded by <b>${escapeHtml(notice.actorName || 'someone')}</b>`);
+    return lines.join('\n');
+  }
+
+  // Deleted. Deliberately announced: a shared record of debt disappearing is
+  // exactly the sort of change that should not happen quietly.
+  lines.push('🏦 <b>Loan deleted</b>', '');
+  lines.push(`📝 ${escapeHtml(notice.name)}`);
+  lines.push(`💵 Was ${formatAmount(notice.principal)}, outstanding ${formatAmount(notice.outstanding)}`);
+  lines.push(`\n✍️ Deleted by <b>${escapeHtml(notice.actorName || 'someone')}</b>`);
+  return lines.join('\n');
+}
+
+export interface LoanNotifyOptions {
+  users: NotifyUser[];
+  notice: LoanNotice;
+  actorUserId?: string | null;
+  actorTelegramId?: string | number | null;
+  webUrl?: string | null;
+  botToken?: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}
+
 /**
- * Send the alert to everyone who should get it.
+ * Tell the other users about a loan. Same transport and same guarantees as
+ * notifyTransaction — see sendToUsers.
+ */
+export async function notifyLoan(options: LoanNotifyOptions): Promise<NotifyResult> {
+  return sendToUsers({
+    ...options,
+    text: buildLoanMessage(options.notice),
+    label: 'loan',
+  });
+}
+
+// ── Transport ───────────────────────────────────────────────
+
+/** Everything the sending half needs: who, what, and who to leave out. */
+interface SendOptions {
+  users: NotifyUser[];
+  text: string;
+  /** Only used to name the thing in log lines. */
+  label: string;
+  actorUserId?: string | null;
+  actorTelegramId?: string | number | null;
+  webUrl?: string | null;
+  botToken?: string;
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}
+
+/**
+ * Send one message to everyone who should get it.
  *
  * Never throws: one unreachable recipient must not stop the others, and a
- * notification failure must never be able to fail the transaction that caused
- * it. The caller gets counts back to log.
+ * notification failure must never be able to fail the write that caused it.
+ * The caller gets counts back to log.
  */
-export async function notifyTransaction(options: NotifyOptions): Promise<NotifyResult> {
+async function sendToUsers(options: SendOptions): Promise<NotifyResult> {
   const { recipients, skipped } = selectRecipients(options.users, {
     userId: options.actorUserId,
     telegramId: options.actorTelegramId,
@@ -210,13 +345,12 @@ export async function notifyTransaction(options: NotifyOptions): Promise<NotifyR
   if (!token) {
     // Silently doing nothing here is what turns a feature into a mystery, so
     // say so loudly and report every recipient as failed.
-    console.error('[notify] BOT_TOKEN is not set — cannot send transaction alerts');
+    console.error(`[notify] BOT_TOKEN is not set — cannot send ${options.label} alerts`);
     result.failed = recipients.length;
     return result;
   }
 
   const doFetch = options.fetchImpl ?? fetch;
-  const text = buildMessage(options.notice);
   const button =
     options.webUrl && /^https?:\/\//.test(options.webUrl)
       ? { reply_markup: { inline_keyboard: [[{ text: '🔗 Open in app', url: options.webUrl }]] } }
@@ -230,7 +364,7 @@ export async function notifyTransaction(options: NotifyOptions): Promise<NotifyR
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             chat_id: user.telegramId,
-            text,
+            text: options.text,
             parse_mode: 'HTML',
             disable_web_page_preview: true,
             ...button,
@@ -255,4 +389,17 @@ export async function notifyTransaction(options: NotifyOptions): Promise<NotifyR
   );
 
   return result;
+}
+
+/**
+ * Send the alert for a transaction.
+ *
+ * See sendToUsers for the delivery guarantees.
+ */
+export async function notifyTransaction(options: NotifyOptions): Promise<NotifyResult> {
+  return sendToUsers({
+    ...options,
+    text: buildMessage(options.notice),
+    label: 'transaction',
+  });
 }

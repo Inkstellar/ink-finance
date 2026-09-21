@@ -1215,6 +1215,12 @@ bot.action(/tx:(.+):(.+)/, async ctx => {
       u => u.telegramId && String(u.telegramId) === String(ctx.from.id),
     );
 
+    // Resolved before the transaction so the alert can be routed to the loan
+    // instead of sent twice: the payment alert carries the outstanding balance,
+    // which is the number that matters for an EMI. Only suppress when the loan
+    // really was found — otherwise nothing would announce it at all.
+    const loan = p.loanId ? (await api.getLoans()).find(l => l.id === p.loanId) : undefined;
+
     await api.createTransaction({
       amount: p.analysis.amount,
       type: p.analysis.type,
@@ -1228,27 +1234,28 @@ bot.action(/tx:(.+):(.+)/, async ctx => {
       categoryId: p.categoryId,
       userId: p.userId || null,
       ...(toAccountId ? { toAccountId } : {}),
-    }, { userId: sender?.id, telegramId: ctx.from.id });
+    }, {
+      userId: sender?.id,
+      telegramId: ctx.from.id,
+      suppressAlert: Boolean(loan),
+    });
 
     // A loan payment entered from a template should move the loan too,
     // otherwise the EMI would exist as a transaction but the loan would still
     // show the old outstanding balance. Chat can't know the interest split, so
     // the whole payment is booked as principal.
     let loanNote = '';
-    if (p.loanId) {
-      const loan = (await api.getLoans()).find(l => l.id === p.loanId);
-      if (loan) {
-        await api.createLoanPayment(loan.id, {
-          amount: p.analysis.amount,
-          principal: p.analysis.amount,
-          interest: 0,
-          balance: Math.max(0, loan.remainingPrincipal - p.analysis.amount),
-          paidOn: p.analysis.date,
-        });
-        loanNote =
-          `\n🏦 ${loan.name} → outstanding ${fmt(Math.max(0, loan.remainingPrincipal - p.analysis.amount))}` +
-          `\n_Booked as principal; use the Loans page if you need to split interest._`;
-      }
+    if (loan) {
+      await api.createLoanPayment(loan.id, {
+        amount: p.analysis.amount,
+        principal: p.analysis.amount,
+        interest: 0,
+        balance: Math.max(0, loan.remainingPrincipal - p.analysis.amount),
+        paidOn: p.analysis.date,
+      });
+      loanNote =
+        `\n🏦 ${loan.name} → outstanding ${fmt(Math.max(0, loan.remainingPrincipal - p.analysis.amount))}` +
+        `\n_Booked as principal; use the Loans page if you need to split interest._`;
     }
 
     pending.delete(pid);
