@@ -11,6 +11,10 @@ name: Deploy to Render
 # This workflow makes that API call for us on every push to main, and then
 # waits for each deploy to actually go live and health-checks the result.
 #
+# Only the services a push can actually affect are redeployed — see the
+# `changes` job. A bot rebuild takes ~14 minutes on the free tier, so
+# rebuilding it for a CSS change is expensive dead time.
+#
 # Requires one repository secret: RENDER_API_KEY (Render → Account Settings
 # → API Keys).
 
@@ -39,8 +43,83 @@ env:
   RENDER_API: https://api.render.com/v1
 
 jobs:
+  # ── Which services does this push affect? ──────────────────
+  # Each service is its own Render build with its own source tree, so the
+  # question is just which files it consumes:
+  #
+  #   web  src/, public/, index.html, vite.config.*, tsconfig.app.json
+  #   api  server/, tsconfig.json
+  #   bot  telegram-bot/
+  #   all  prisma/ (all three run `prisma generate`), and package.json /
+  #        package-lock.json (a dependency change can reach any of them)
+  #
+  # Anything not listed above is treated as affecting all three. That is the
+  # safe direction to be wrong in: a needless rebuild costs time, a skipped
+  # one ships nothing. Files that cannot affect a deploy (.md, .github/,
+  # scripts/) are ignored so a docs edit doesn't trigger three builds.
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' }}
+    outputs:
+      web: ${{ steps.filter.outputs.web }}
+      api: ${{ steps.filter.outputs.api }}
+      bot: ${{ steps.filter.outputs.bot }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Work out which services are affected
+        id: filter
+        run: |
+          set -euo pipefail
+
+          base="${{ github.event.before }}"
+          if [ "$base" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            echo "No usable base commit (new branch or force-push) — assuming everything changed."
+            files=$(git ls-files)
+          else
+            files=$(git diff --name-only "$base" "${{ github.sha }}")
+          fi
+
+          web=false; api=false; bot=false; ignored=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              src/*|public/*|index.html|vite.config.*|tsconfig.app.json) web=true ;;
+              server/*|tsconfig.json)                                    api=true ;;
+              telegram-bot/*)                                            bot=true ;;
+              prisma/*|package.json|package-lock.json)                   web=true; api=true; bot=true ;;
+              *.md|.github/*|scripts/*)                                  ignored=$((ignored + 1)) ;;
+              *)                                                         web=true; api=true; bot=true ;;
+            esac
+          done <<< "$files"
+
+          echo "web=$web" >> "$GITHUB_OUTPUT"
+          echo "api=$api" >> "$GITHUB_OUTPUT"
+          echo "bot=$bot" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### changed files"
+            echo '```'
+            echo "${files:-(none)}"
+            echo '```'
+            echo "→ web: **$web** · api: **$api** · bot: **$bot**"
+            [ "$ignored" -gt 0 ] && echo "($ignored file(s) cannot affect a deploy and were ignored)"
+            true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "web=$web api=$api bot=$bot"
+
   deploy:
     name: deploy ${{ matrix.key }}
+    needs: changes
+    # `always()` is required: on workflow_dispatch the `changes` job is
+    # skipped, and a job whose dependency was skipped is itself skipped
+    # unless the condition contains a status function.
+    if: ${{ always() && (github.event_name == 'workflow_dispatch' || needs.changes.result == 'success') }}
     runs-on: ubuntu-latest
 
     strategy:
@@ -60,10 +139,47 @@ jobs:
     steps:
       # NOTE: the `matrix` context is only available at step level, never in a
       # job-level `if` — putting this on the job makes the whole workflow file
-      # invalid (0s failure). Hence it is repeated on each step below.
+      # invalid (0s failure). Hence the decision is made in this one step and
+      # reused by the steps below.
+      - name: Should this service deploy?
+        id: decide
+        env:
+          CHANGED_WEB: ${{ needs.changes.outputs.web }}
+          CHANGED_API: ${{ needs.changes.outputs.api }}
+          CHANGED_BOT: ${{ needs.changes.outputs.bot }}
+        run: |
+          set -euo pipefail
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            case "${{ inputs.service }}" in
+              all) run=true ;;
+              *)   [ "${{ inputs.service }}" = "${{ matrix.key }}" ] && run=true || run=false ;;
+            esac
+            reason="manually requested"
+            skip_reason="not the service you selected"
+          else
+            case "${{ matrix.key }}" in
+              web) changed="$CHANGED_WEB" ;;
+              api) changed="$CHANGED_API" ;;
+              bot) changed="$CHANGED_BOT" ;;
+              *)   changed=false ;;
+            esac
+            run="$changed"
+            reason="changed files"
+            skip_reason="no files it consumes changed"
+          fi
+
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = "true" ]; then
+            echo "${{ matrix.key }}: deploying ($reason)"
+          else
+            echo "${{ matrix.key }}: skipping — $skip_reason"
+            echo "### ${{ matrix.key }} — skipped ($skip_reason)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
       - name: Trigger deploy
         id: trigger
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.key }}
+        if: ${{ steps.decide.outputs.run == 'true' }}
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
@@ -93,7 +209,7 @@ jobs:
           echo "### ${{ matrix.key }} — deploy \`${deploy_id}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Wait for deploy to go live
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.key }}
+        if: ${{ steps.decide.outputs.run == 'true' }}
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
         run: |
@@ -128,7 +244,7 @@ jobs:
           exit 1
 
       - name: Health-check the deployed service
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.service == 'all' || inputs.service == matrix.key }}
+        if: ${{ steps.decide.outputs.run == 'true' }}
         run: |
           set -euo pipefail
           # Free-tier services cold-start, so retry with a long timeout before
