@@ -28,6 +28,7 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import FinanceIcon from '@mui/icons-material/AccountBalance';
 import { useEffect } from 'react';
 import UserAvatar, { AVATAR_CHANGED_EVENT, type AvatarUser } from './UserAvatar';
+import InstallApp from './InstallApp';
 import { useApi } from '../hooks/useApi';
 import { signOut, type SessionUser } from '../lib/auth';
 
@@ -256,6 +257,9 @@ function SidebarContent({ user, onClose }: SidebarContentProps) {
             </Box>
           </Stack>
         )}
+        {/* Renders nothing once the app is installed or when the browser
+            offers no way to install it. */}
+        <InstallApp onNavigate={onClose} />
         <Button
           fullWidth
           variant="outlined"

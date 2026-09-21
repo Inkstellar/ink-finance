@@ -24,6 +24,7 @@
     "test:loans": "node scripts/loans-smoke.mjs",
     "build": "prisma generate && tsc -p tsconfig.app.json && vite build",
     "build:server": "tsc -p tsconfig.json",
+    "icons": "node scripts/generate-icons.mjs",
     "build:dev": "npx tsx server/index.ts",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.json --noEmit",
@@ -39,7 +40,8 @@
     "test:deploy-paths": "node scripts/deploy-paths.test.mjs",
     "test:notify": "tsx scripts/notify.test.ts",
     "test:alerts": "node scripts/transaction-alert-smoke.mjs",
-    "test:link": "tsx scripts/telegram-link.test.ts"
+    "test:link": "tsx scripts/telegram-link.test.ts",
+    "test:pwa": "node scripts/pwa.test.mjs"
   },
   "dependencies": {
     "@auth/express": "^0.12.3",

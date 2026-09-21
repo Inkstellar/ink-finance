@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Ink Finance">
+  <defs>
+    <linearGradient id="ink" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#667eea"/>
+      <stop offset="1" stop-color="#764ba2"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112.64" fill="url(#ink)"/>
+  <g fill="#fff"><path d="M256 90.42L424.96 178.28L87.04 178.28Z"/><rect x="103.94" y="178.28" width="304.13" height="23.65"/><rect x="127.59" y="222.21" width="37.17" height="131.79"/><rect x="201.93" y="222.21" width="37.17" height="131.79"/><rect x="272.9" y="222.21" width="37.17" height="131.79"/><rect x="347.24" y="222.21" width="37.17" height="131.79"/><rect x="107.32" y="354" width="297.37" height="27.03"/><rect x="90.42" y="381.03" width="331.16" height="37.17"/></g>
+</svg>

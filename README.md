@@ -11,6 +11,7 @@ Personal finance manager for tracking home finances, personal investments, and l
 - **Loans** — Track active loans (home, car, personal), record EMI payments, view amortization; edit any loan's terms, change its status, remove a mis-entered payment, or delete it
 - **Budget** — Set monthly budgets per category, track spending progress
 - **Users** — Manage household members, their logins and profile pictures
+- **Installable** — a PWA, so it can be added to a phone's home screen and open full screen (see below)
 - **Telegram Bot** — Send a photo of any bill/receipt/UPI screenshot to @inkfin_bot; AI vision extracts merchant, amount, date, and category, then you confirm with one tap
 
 ## Tech Stack
@@ -97,6 +98,8 @@ npm run test:privacy # no endpoint leaks a password hash or an avatar
 npm run test:alerts  # transaction alerts: who is messaged, and who is not
 npm run test:bot     # pure analytics: templates, bucketing, reports
 npm run test:notify  # pure: alert wording, escaping, recipient selection
+npm run test:pwa     # pure: manifest, icons, head tags, the service worker
+npm run icons        # regenerate public/icon-* from scripts/icon-art.mjs
 ```
 
 > **Why the `--` matters:** npm treats unknown `--flags` as *its own* config and
@@ -311,6 +314,79 @@ their stored `@username` to the numeric id automatically** (`telegram-bot/link.t
 Send `/start` once and alerts start working — and `/start` will tell you which
 of the two states you are in.
 
+## Install it on a phone (PWA)
+
+The web app is installable, so it can live on a home screen and open full
+screen with no browser chrome.
+
+- **Android / desktop Chrome** — an **Install app** entry appears at the bottom
+  of the sidebar. Tapping it shows the browser's own install dialog. (Chrome
+  also offers its own install icon in the address bar.) The entry only exists
+  while the browser has an install prompt to give, and disappears once installed.
+- **iPhone / iPad** — the same entry explains where the button is, because iOS
+  has no programmatic install: **Share → Add to Home Screen**. Only Safari can
+  do it, which is why Chrome and Firefox on iOS are deliberately not offered
+  these instructions.
+
+### What is in the repository
+
+| File | Purpose |
+|------|---------|
+| `public/manifest.webmanifest` | name, icons, `display: standalone`, theme colours, long-press shortcuts |
+| `public/sw.js` | the service worker (caching rules below) |
+| `public/icon.svg` + 4 PNGs | the mark, at every size the platforms ask for |
+| `scripts/icon-art.mjs` | the mark **as geometry** — the single source for the SVG and every PNG |
+| `scripts/generate-icons.mjs` | writes the files (`npm run icons`) |
+| `src/lib/pwa.ts` | service-worker registration and install state |
+| `src/components/InstallApp.tsx` | the sidebar entry and its dialog |
+| `src/components/OfflineBanner.tsx` | the "you are offline" warning |
+
+The icons are **committed**, not built: Render serves `dist/` verbatim and a
+static host cannot rasterise an SVG at request time. There is no image library
+involved — `scripts/icon-art.mjs` rasterises the mark with a 4×4 supersampled
+scanline loop and encodes the PNG with `node:zlib`, so the icons are
+reproducible in CI with no dependencies. `npm run test:pwa` fails if the
+committed PNGs stop matching the geometry, which is the only thing standing
+between "someone tweaked the art" and "the icons silently never changed".
+
+Three icon variants exist because the platforms disagree: the favicon is
+rounded and has a large glyph, the **maskable** one is full-bleed with a smaller
+glyph (Android crops it to a circle of 80% diameter — a square glyph has to fit
+inside that, so it is deliberately smaller), and `apple-touch-icon.png` is
+full-bleed and opaque because iOS masks it itself and turns transparency black.
+
+### Service worker caching rules
+
+| Request | Strategy | Why |
+|---------|----------|-----|
+| `/api/*` | **never intercepted** | This is a finance app. A cached balance is a wrong balance, and a cached success for a write would be far worse. Offline reads therefore fail — on purpose. |
+| navigations | network first → cached shell | Network first so a deploy is picked up on the next launch rather than serving an `index.html` that references asset filenames the server no longer has. |
+| `/assets/*` | cache first | Vite content-hashes these, so a given URL is immutable. |
+| everything else | stale-while-revalidate | Icons, the manifest, and the Google Fonts CSS/woff2 (cross-origin, so opaque responses — status 0 is accepted as cacheable). |
+
+`VERSION` at the top of `public/sw.js` is what invalidates everything: bumping
+it makes `activate` delete every cache whose name does not start with the new
+version.
+
+Two deliberate choices worth not "fixing":
+
+- **`skipWaiting()` + a one-time reload.** A new worker takes over immediately
+  and the page reloads itself on `controllerchange`, so the running bundle and
+  the worker are always from the same deploy. The alternative — letting the old
+  worker serve the old cache until every tab closes — leaves the app pinned to a
+  stale shell.
+- **No `viewport-fit=cover`, no safe-area padding, no iOS splash screens.** The
+  status bar is left at iOS's `default` style so its dark text stays legible
+  above the white mobile app bar. Edge-to-edge would need `env(safe-area-inset-*)`
+  padding on the app bar, drawer and content, and getting it wrong puts the clock
+  on top of the toolbar.
+
+`npm run test:pwa` (91 checks) drives the **shipped** `public/sw.js` through a
+sandboxed Cache/fetch harness rather than testing a copy of the rules, asserts
+the committed PNGs still match the art, and checks the manifest, the icons and
+the head tags agree with each other. Removing the `/api` guard from the worker
+makes it fail — that was verified by planting it and reverting.
+
 ## API Server
 
 The Express API server runs on port 3456 with these endpoints:
@@ -354,11 +430,15 @@ ink-finance/
 ├── src/
 │   ├── components/          # Shared UI components
 │   │   ├── Sidebar.tsx
+│   │   ├── InstallApp.tsx   # "Install app" entry + Android/iOS dialogs
+│   │   ├── OfflineBanner.tsx
 │   │   └── StatCard.tsx
 │   ├── hooks/
-│   │   └── useApi.ts        # Data fetching hook
+│   │   ├── useApi.ts        # Data fetching hook
+│   │   └── useInstallState.ts
 │   ├── lib/
 │   │   ├── api.ts           # API client
+│   │   ├── pwa.ts           # Service-worker registration + install state
 │   │   └── format.ts        # INR formatting helpers
 │   ├── pages/
 │   │   ├── Dashboard.tsx
@@ -369,7 +449,14 @@ ink-finance/
 │   ├── App.tsx              # Router + layout
 │   ├── main.tsx             # Entry point
 │   └── theme.ts             # MUI theme
+├── public/                  # Copied verbatim into dist/ by Vite
+│   ├── manifest.webmanifest
+│   ├── sw.js                # Service worker (never caches /api)
+│   └── icon.svg, icon-*.png, apple-touch-icon.png
 ├── scripts/
+│   ├── icon-art.mjs         # The app mark, as geometry
+│   ├── generate-icons.mjs   # npm run icons
+│   ├── pwa.test.mjs         # npm run test:pwa
 │   ├── run-with-env.mjs     # run a command with layered .env files
 │   └── render-status.mjs    # ping the deployed Render services
 ├── .env.local               # Secrets + local URLs (gitignored)

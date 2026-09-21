@@ -18,6 +18,7 @@ import Loans from './pages/Loans';
 import Budget from './pages/Budget';
 import Users from './pages/Users';
 import Login from './pages/Login';
+import OfflineBanner from './components/OfflineBanner';
 import { useSession } from './hooks/useSession';
 
 const DRAWER_WIDTH = 260;
@@ -101,6 +102,10 @@ export default function App() {
             </Typography>
           </Toolbar>
         </AppBar>
+
+        {/* Installed as a PWA the shell comes from the cache, so this is the
+            only thing that tells the user the numbers behind it did not. */}
+        <OfflineBanner />
 
         {/* Page content */}
         <Box component="main" sx={{ flexGrow: 1, p: 3, overflow: 'auto' }}>

@@ -53,5 +53,8 @@ jobs:
       - name: Deploy-workflow path classification
         run: node scripts/deploy-paths.test.mjs
 
+      - name: PWA manifest, icons and service worker
+        run: npm run test:pwa
+
       - name: Build the web bundle and the server
         run: npm run build && npm run build:server
