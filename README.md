@@ -96,6 +96,20 @@ ways: it scans `scripts/backup-format.mjs` for local-time APIs, and it re-encode
 a date in child processes pinned to `Pacific/Kiritimati` (+14), `Pacific/Midway`
 (−11), `America/New_York` and `UTC`, requiring identical output.
 
+`npm run test:backup-restore` (16 checks) proves the *other* half — that a
+backup can actually be put back. It creates a throwaway `fin_zzrestore_probe`
+table, dumps the database, deletes the rows, restores, and compares the result
+field by field: the date as an instant, a bigint larger than
+`Number.MAX_SAFE_INTEGER`, a `bytea` blob, nulls, and an apostrophe in a string.
+It then checks that a second restore skips the now-populated table instead of
+duplicating rows, and drops the probe table in a `finally`. It never writes to a
+real `fin_*` table.
+
+That test exists because the first live dump only ever exercised the *skip*
+path — every non-empty table was skipped and every empty one had zero rows — so
+`insertRows()`, the code that actually restores data, had never run against a
+real database. A backup whose restore is untested is theatre.
+
 ## Quick Start
 
 ```bash
@@ -139,6 +153,7 @@ npm run test:notify  # pure: alert wording, escaping, recipient selection
 npm run test:pwa     # pure: manifest, icons, head tags, the service worker
 npm run test:calendar # pure: the month grid, day bucketing, timezone independence
 npm run test:backup  # pure: backup encode/decode, and dates that must not shift
+npm run test:backup-restore # live: dump → wipe → restore, and the rows must match
 npm run icons        # regenerate public/icon-* from scripts/icon-art.mjs
 ```
 
@@ -566,6 +581,7 @@ ink-finance/
 │   ├── db-backup.mjs        # npm run db:backup — dump / inspect / restore
 │   ├── backup-format.mjs    # pure encode/decode for the backup file
 │   ├── backup-format.test.mjs # npm run test:backup
+│   ├── backup-roundtrip.mjs # npm run test:backup-restore (needs the database)
 │   ├── run-with-env.mjs     # run a command with layered .env files
 │   └── render-status.mjs    # ping the deployed Render services
 ├── .env.local               # Secrets + local URLs (gitignored)

@@ -45,7 +45,8 @@
     "test:pwa": "node scripts/pwa.test.mjs",
     "test:calendar": "tsx scripts/calendar.test.ts",
     "test:events": "node scripts/events-smoke.mjs",
-    "test:backup": "node scripts/backup-format.test.mjs"
+    "test:backup": "node scripts/backup-format.test.mjs",
+    "test:backup-restore": "node scripts/backup-roundtrip.mjs"
   },
   "dependencies": {
     "@auth/express": "^0.12.3",
