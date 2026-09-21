@@ -6,12 +6,14 @@ import {
   Box, Typography, Card, CardContent, Button, Dialog, DialogTitle, DialogContent,
   DialogActions, TextField, MenuItem, Select, FormControl, InputLabel,
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Paper,
-  IconButton, Grid, Chip, Stack, Tooltip, InputAdornment, TableSortLabel
+  IconButton, Chip, Stack, Tooltip, InputAdornment, TableSortLabel
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import UserAvatar from '../components/UserAvatar';
 import { formatINRDecimal, formatDate } from '../lib/format';
 
@@ -53,6 +55,98 @@ const COLUMNS: { key: SortKey | 'actions'; label: string; align: 'left' | 'right
   { key: 'actions', label: '', align: 'right', sortable: false },
 ];
 
+/**
+ * How a transaction's type reads: the sign and colour of the amount, and the
+ * tone of the type chip.
+ *
+ * Shared by the table and the card list. Two layouts rendering the same row is
+ * exactly where a sign or a colour silently drifts apart, so neither owns it.
+ */
+function amountTone(type: string) {
+  return {
+    sign: type === 'INCOME' ? '+' : type === 'EXPENSE' ? '-' : '',
+    color: type === 'INCOME' ? 'success.main' : type === 'EXPENSE' ? 'error.main' : 'text.primary',
+    chipBg: type === 'INCOME' ? 'success.light' : type === 'EXPENSE' ? 'error.light' : 'info.light',
+    label: type.replace(/_/g, ' '),
+  };
+}
+
+/** One transaction as a card, for widths where the table cannot fit. */
+function TransactionCard({
+  tx,
+  user,
+  onDelete,
+}: {
+  tx: Transaction;
+  user?: User;
+  onDelete: (id: string) => void;
+}) {
+  const tone = amountTone(tx.type);
+
+  return (
+    <Paper elevation={0} sx={{ p: 1.5, display: 'flex', gap: 1.5, alignItems: 'flex-start' }}>
+      {user ? (
+        <UserAvatar user={user} size={32} fontSize={13} sx={{ flexShrink: 0, mt: 0.25 }} />
+      ) : (
+        <Chip label="—" size="small" sx={{ height: 22, fontSize: 11, flexShrink: 0, mt: 0.25 }} />
+      )}
+
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Stack direction="row" spacing={1} alignItems="baseline" justifyContent="space-between">
+          <Typography variant="body2" fontWeight={600} sx={{ minWidth: 0, overflowWrap: 'anywhere' }}>
+            {tx.description}
+          </Typography>
+          <Typography
+            variant="body2"
+            fontWeight={700}
+            sx={{ color: tone.color, flexShrink: 0, whiteSpace: 'nowrap' }}
+          >
+            {tone.sign}
+            {formatINRDecimal(tx.amount)}
+          </Typography>
+        </Stack>
+
+        {/* The three secondary fields the table spreads over three columns,
+            gathered onto one wrapping line. */}
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5, flexWrap: 'wrap', rowGap: 0.25 }}>
+          <Typography variant="caption" color="text.secondary">
+            {formatDate(tx.date)}
+          </Typography>
+          {tx.category && (
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <Box sx={{ width: 8, height: 8, borderRadius: '50%', bgcolor: tx.category.color }} />
+              <Typography variant="caption" color="text.secondary">
+                {tx.category.name}
+              </Typography>
+            </Stack>
+          )}
+          {tx.account?.name && (
+            <Typography variant="caption" color="text.secondary">
+              {tx.account.name}
+            </Typography>
+          )}
+        </Stack>
+
+        <Stack direction="row" alignItems="center" sx={{ mt: 0.75 }}>
+          <Typography variant="caption" sx={{ px: 1, py: 0.25, borderRadius: 1, bgcolor: tone.chipBg }}>
+            {tone.label}
+          </Typography>
+          <Tooltip title="Delete">
+            <IconButton
+              size="small"
+              onClick={() => onDelete(tx.id)}
+              aria-label={`Delete ${tx.description}`}
+              sx={{ ml: 'auto' }}
+            >
+              <DeleteIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        </Stack>
+      </Box>
+    </Paper>
+  );
+}
+
 export default function Transactions() {
   const { data: transactions, loading, refetch } = useApi<Transaction[]>('/api/transactions');
   const { data: accounts } = useApi<Account[]>('/api/accounts');
@@ -81,6 +175,19 @@ export default function Transactions() {
       setOrderBy(key);
       setOrder(key === 'date' || key === 'amount' ? 'desc' : 'asc');
     }
+  };
+
+  /**
+   * Pick a sort column outright, without toggling.
+   *
+   * The table header uses `handleSort`, where clicking the active column
+   * flips its direction. A `<Select>` cannot: re-picking the current value is
+   * not a click on it, and flipping the order there would be a surprise. The
+   * direction is a separate control instead.
+   */
+  const chooseSortKey = (key: SortKey) => {
+    setOrderBy(key);
+    setOrder(key === 'date' || key === 'amount' ? 'desc' : 'asc');
   };
 
   // Resolve a comparable value for a transaction given the sort key
@@ -231,8 +338,76 @@ export default function Transactions() {
         </Stack>
       </Box>
 
-      <TableContainer component={Paper} elevation={0}>
-        <Table>
+      {/* Sort control for the card list. The table header carries this at lg+,
+          and losing sorting on a phone would be a regression, not a
+          simplification. The direction is its own button because a Select
+          cannot express "click the active column again to flip it". */}
+      <Stack
+        direction="row"
+        spacing={1}
+        alignItems="center"
+        sx={{ display: { xs: 'flex', lg: 'none' }, mb: 1.5 }}
+      >
+        <FormControl size="small" sx={{ flex: { xs: '0 1 200px', sm: 'none' }, minWidth: { xs: 0, sm: 140 } }}>
+          <InputLabel>Sort by</InputLabel>
+          <Select
+            value={orderBy}
+            label="Sort by"
+            onChange={(e) => chooseSortKey(e.target.value as SortKey)}
+          >
+            {COLUMNS.filter((c) => c.sortable).map((c) => (
+              <MenuItem key={c.key} value={c.key}>{c.label}</MenuItem>
+            ))}
+          </Select>
+        </FormControl>
+        <Tooltip title={order === 'asc' ? 'Ascending' : 'Descending'}>
+          <IconButton
+            onClick={() => setOrder(order === 'asc' ? 'desc' : 'asc')}
+            aria-label={`Sort ${order === 'asc' ? 'ascending' : 'descending'}`}
+            sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, flexShrink: 0 }}
+          >
+            {order === 'asc' ? <ArrowUpwardIcon fontSize="small" /> : <ArrowDownwardIcon fontSize="small" />}
+          </IconButton>
+        </Tooltip>
+      </Stack>
+
+      {/* Below lg the same rows are cards. The table needs ~1130px of natural
+          width — eight columns, each carrying its own padding — so anywhere
+          narrower scrolls sideways inside its Paper, and the amount is the
+          field that falls off the right edge. Two cards per row from sm, so a
+          tablet is not one absurdly wide column. */}
+      <Box sx={{ display: { xs: 'block', lg: 'none' } }}>
+        {loading || txs.length === 0 ? (
+          <Paper elevation={0} sx={{ p: 3, textAlign: 'center' }}>
+            <Typography variant="body2" color="text.secondary">
+              {loading
+                ? 'Loading…'
+                : (transactions || []).length > 0
+                  ? `No transactions match ${search ? `"${search}"` : 'the current filters'}.`
+                  : 'No transactions yet. Click "Add Transaction" to get started.'}
+            </Typography>
+          </Paper>
+        ) : (
+          <Box
+            sx={{
+              display: 'grid',
+              gap: 1,
+              gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))' },
+            }}
+          >
+            {txs.map((tx) => (
+              <TransactionCard key={tx.id} tx={tx} user={getUser(tx.userId)} onDelete={handleDelete} />
+            ))}
+          </Box>
+        )}
+      </Box>
+
+      <TableContainer
+        component={Paper}
+        elevation={0}
+        sx={{ display: { xs: 'none', lg: 'block' } }}
+      >
+        <Table sx={{ '& .MuiTableCell-root': { px: 1.5 } }}>
           <TableHead>
             <TableRow>
               {COLUMNS.map((col) => (
@@ -267,6 +442,7 @@ export default function Transactions() {
               )
             ) : txs.map((tx) => {
               const user = getUser(tx.userId);
+              const tone = amountTone(tx.type);
               return (
                 <TableRow key={tx.id} hover>
                   <TableCell>
@@ -292,26 +468,24 @@ export default function Transactions() {
                   </TableCell>
                   <TableCell>{tx.account?.name}</TableCell>
                   <TableCell>
-                    <Typography variant="caption" sx={{
-                      px: 1, py: 0.5, borderRadius: 1,
-                      bgcolor: tx.type === 'INCOME' ? 'success.light' :
-                        tx.type === 'EXPENSE' ? 'error.light' : 'info.light',
-                    }}>
-                      {tx.type.replace(/_/g, ' ')}
+                    <Typography variant="caption" sx={{ px: 1, py: 0.5, borderRadius: 1, bgcolor: tone.chipBg }}>
+                      {tone.label}
                     </Typography>
                   </TableCell>
-                  <TableCell align="right" sx={{
-                    color: tx.type === 'INCOME' ? 'success.main' :
-                      tx.type === 'EXPENSE' ? 'error.main' : 'text.primary',
-                    fontWeight: 600,
-                  }}>
-                    {tx.type === 'INCOME' ? '+' : tx.type === 'EXPENSE' ? '-' : ''}
+                  <TableCell align="right" sx={{ color: tone.color, fontWeight: 600 }}>
+                    {tone.sign}
                     {formatINRDecimal(tx.amount)}
                   </TableCell>
                   <TableCell>
-                    <IconButton size="small" onClick={() => handleDelete(tx.id)}>
-                      <DeleteIcon fontSize="small" />
-                    </IconButton>
+                    <Tooltip title="Delete">
+                      <IconButton
+                        size="small"
+                        onClick={() => handleDelete(tx.id)}
+                        aria-label={`Delete ${tx.description}`}
+                      >
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
                   </TableCell>
                 </TableRow>
               );
