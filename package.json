@@ -6,7 +6,7 @@
   "description": "Personal finance manager — home finances, investments, and loans tracking.",
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"npm run server\" \"npm run web\"",
-    "dev:web":"npm run web",
+    "dev:web": "npm run web",
     "web": "vite",
     "server": "npx tsx server/index.ts",
     "server:start": "node dist/server/index.js",
@@ -14,12 +14,13 @@
     "bot:start": "node dist/telegram-bot/index.js",
     "bot:watch": "tsx watch telegram-bot/index.ts",
     "dev:all": "concurrently -n api,web,bot -c blue,green,yellow \"npm run server\" \"npm run web\" \"npm run bot\"",
-
     "dev:use-render-server": "npm run web:render",
     "dev:use-render-server:with-bot": "concurrently -n web,bot -c green,yellow \"npm run web:render\" \"npm run bot:render\"",
     "web:render": "node scripts/run-with-env.mjs .env.render -- vite --mode render",
     "bot:render": "node scripts/run-with-env.mjs .env.local .env.render -- tsx telegram-bot/index.ts",
     "render:status": "node scripts/render-status.mjs",
+    "user:set-password": "node scripts/set-password.mjs",
+    "test:auth": "node scripts/auth-smoke.mjs",
     "build": "prisma generate && tsc -p tsconfig.app.json && vite build",
     "build:server": "tsc -p tsconfig.json",
     "build:dev": "npx tsx server/index.ts",
@@ -32,12 +33,14 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@auth/express": "^0.12.3",
     "@emotion/react": "^11.13.3",
     "@emotion/styled": "^11.13.0",
     "@mui/icons-material": "^6.1.6",
     "@mui/material": "^6.1.6",
     "@mui/x-data-grid": "^7.7.0",
     "@prisma/client": "^5.22.0",
+    "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^4.21.1",

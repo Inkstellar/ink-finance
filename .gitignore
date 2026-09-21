@@ -5,6 +5,9 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# Vite writes this next to the config when it reloads it
+vite.config.ts.timestamp-*.mjs
+
 # Environment
 .env
 .env.local

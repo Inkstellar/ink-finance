@@ -68,6 +68,53 @@ npm run dev             # Start both API server (3456) and Vite dev server (5179
 
 Open http://localhost:5179
 
+## Authentication
+
+The whole app sits behind a login. Auth.js (`@auth/express`) guards the **API** —
+that is the real boundary — and the SPA renders a login screen in front of it.
+
+**Managing logins from the UI:** the **Users** page has an *Email (for login)*
+field and a key icon per row to set or change a password, so you rarely need the
+terminal. Setting your **own** password there asks for the current one; setting
+someone else's does not (it's a two-person household app, and there'd otherwise
+be no way to give the second person a first password). A user with an email but
+no password shows "no password set — cannot sign in".
+
+```bash
+# From the terminal instead:
+npm run user:set-password                       # interactive, lists users to pick
+npm run user:set-password -- --user K           # attach a login to user K
+npm run user:set-password --user K              # also works
+
+# Verify the whole flow end-to-end against a running API
+npm run test:auth
+```
+
+> **Why the `--` matters:** npm treats unknown `--flags` as *its own* config and
+> forwards only the bare value, so `npm run user:set-password --user K` really
+> runs `… K`. The script treats a non-email argument as the user selector, which
+> is why that form still works — but `--` is the correct spelling.
+
+Design notes worth knowing before changing anything here:
+
+- **Every `/api` route requires a session** except `/api/health` (the keepalive
+  Action pings it) and `/api/auth/*` (you must be able to sign in). A user row
+  with no `passwordHash` simply cannot sign in.
+- **The browser always calls a relative `/api`.** Locally Vite proxies it
+  (`VITE_API_PROXY_TARGET`), in production a Render rewrite on the static site
+  proxies `/api/*` to the API service. This is not cosmetic: `onrender.com` is on
+  the **Public Suffix List**, so `…-web.onrender.com` and `…-api.onrender.com` are
+  *different sites* to the browser. Calling the API directly would make the
+  session cookie a third-party cookie, which Safari drops outright. Same-origin
+  also means CORS is no longer needed for normal traffic.
+- **Sessions are JWTs**, which is mandatory for the Credentials provider.
+  Signing out clears the cookie, but the token stays valid until it expires, so
+  it cannot be revoked server-side — keep `AUTH_SECRET` secret and rotate it to
+  invalidate everything.
+- **The Telegram bot is not affected**: it authenticates server-to-server with
+  `SERVICE_TOKEN` via the `X-Service-Token` header (set the same value on the api
+  and bot services).
+
 ## Develop against the deployed services
 
 You don't have to run the API server locally. The Render deployment can serve
