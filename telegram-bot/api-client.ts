@@ -3,8 +3,11 @@ import type {
   FinCategory,
   FinUser,
   FinLoan,
+  FinLoanPayment,
   CreateTransactionPayload,
   CreateLoanPayload,
+  TransactionQuery,
+  TransactionRow,
 } from './types';
 
 /**
@@ -74,6 +77,19 @@ export class FinanceApiClient {
 
   // ── Transactions ──────────────────────────────────────────
 
+  /**
+   * List transactions. Everything is optional; the API filters server-side so
+   * a range query doesn't have to pull the whole history down.
+   */
+  async getTransactions(query: TransactionQuery = {}): Promise<TransactionRow[]> {
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== null && value !== '') qs.set(key, String(value));
+    }
+    const suffix = qs.toString() ? `?${qs}` : '';
+    return this.getJson<TransactionRow[]>(`/api/transactions${suffix}`);
+  }
+
   async createTransaction(
     payload: CreateTransactionPayload,
   ): Promise<Record<string, unknown>> {
@@ -94,6 +110,14 @@ export class FinanceApiClient {
 
   async createLoan(payload: CreateLoanPayload): Promise<FinLoan> {
     return this.postJson<FinLoan>('/api/loans', payload);
+  }
+
+  /** Record an EMI payment against a loan. */
+  async createLoanPayment(
+    loanId: string,
+    payload: { amount: number; principal: number; interest: number; balance: number; paidOn: string },
+  ): Promise<FinLoanPayment> {
+    return this.postJson<FinLoanPayment>(`/api/loans/${loanId}/payment`, payload);
   }
 
   // ── Dashboard ─────────────────────────────────────────────
