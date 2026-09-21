@@ -4,6 +4,7 @@ import DashboardIcon from '@mui/icons-material/Dashboard';
 import ReceiptIcon from '@mui/icons-material/Receipt';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
+import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
 import BudgetIcon from '@mui/icons-material/PieChart';
 import PeopleIcon from '@mui/icons-material/People';
 import LogoutIcon from '@mui/icons-material/Logout';
@@ -13,6 +14,7 @@ const drawerWidth = 240;
 
 const navItems = [
   { label: 'Dashboard', path: '/', icon: <DashboardIcon /> },
+  { label: 'Accounts', path: '/accounts', icon: <AccountBalanceWalletIcon /> },
   { label: 'Transactions', path: '/transactions', icon: <ReceiptIcon /> },
   { label: 'Investments', path: '/investments', icon: <TrendingUpIcon /> },
   { label: 'Loans', path: '/loans', icon: <AccountBalanceIcon /> },

@@ -5,9 +5,10 @@ Personal finance manager for tracking home finances, personal investments, and l
 ## Features
 
 - **Dashboard** — Net worth overview, monthly income/expense summary, recent transactions
+- **Accounts** — View and manage the accounts behind the net-worth figure; add, edit, archive and restore
 - **Transactions** — Record income, expenses, transfers, investment buys/sells, loan payments
 - **Investments** — Track stocks, mutual funds, ETFs, bonds, crypto, gold holdings with P&L
-- **Loans** — Track active loans (home, car, personal), record EMI payments, view amortization
+- **Loans** — Track active loans (home, car, personal), record EMI payments, view amortization; edit any loan's terms, change its status, remove a mis-entered payment, or delete it
 - **Budget** — Set monthly budgets per category, track spending progress
 - **Telegram Bot** — Send a photo of any bill/receipt/UPI screenshot to @inkfin_bot; AI vision extracts merchant, amount, date, and category, then you confirm with one tap
 
@@ -88,6 +89,7 @@ npm run user:set-password --user K              # also works
 
 # Verify the whole flow end-to-end against a running API
 npm run test:auth
+npm run test:loans
 ```
 
 > **Why the `--` matters:** npm treats unknown `--flags` as *its own* config and
