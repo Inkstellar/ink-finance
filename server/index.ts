@@ -37,7 +37,11 @@ app.use(
     credentials: true,
   }),
 );
-app.use(express.json());
+// The default 100kb body limit is too small for a profile picture, which
+// arrives as a base64 data URL. The browser downscales to ~256px first
+// (~20KB), so 2mb is generous headroom rather than the expected size — and
+// PUT /api/users/:id/avatar re-checks the decoded byte length regardless.
+app.use(express.json({ limit: '2mb' }));
 
 // ─── Auth.js ────────────────────────────────────────────────
 // Mounted BEFORE the gate: signing in must not require being signed in.
@@ -98,6 +102,14 @@ app.delete('/api/accounts/:id', async (req, res) => {
  * Fields safe to send to a client. `passwordHash` must never be included — a
  * bare `findMany` returns every column, which is exactly the leak to avoid.
  */
+/**
+ * Columns safe to return for a user.
+ *
+ * `avatarMime` is included so `shapeUser` can report `hasAvatar` — but the
+ * `avatar` base64 itself is deliberately NOT here. It is served as bytes from
+ * `GET /api/users/:id/avatar` instead, so a JSON list of users doesn't carry
+ * tens of kilobytes of image data per row.
+ */
 const USER_FIELDS = {
   id: true,
   name: true,
@@ -105,17 +117,27 @@ const USER_FIELDS = {
   color: true,
   email: true,
   telegramId: true,
+  avatarMime: true,
   createdAt: true,
   updatedAt: true,
 } as const;
 
-/** Adds `hasPassword` for the UI without ever exposing the hash itself. */
-function shapeUser<T extends { passwordHash?: string | null }>(user: T) {
-  const { passwordHash, ...rest } = user;
-  return { ...rest, hasPassword: Boolean(passwordHash) };
+/**
+ * Adds `hasPassword`/`hasAvatar` for the UI without exposing the hash, and
+ * strips the avatar bookkeeping field the client has no use for.
+ */
+function shapeUser<T extends { passwordHash?: string | null; avatarMime?: string | null }>(
+  user: T,
+) {
+  const { passwordHash, avatarMime, ...rest } = user;
+  return { ...rest, hasPassword: Boolean(passwordHash), hasAvatar: Boolean(avatarMime) };
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** Image types accepted for an avatar, and the decoded-size ceiling. */
+const AVATAR_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const AVATAR_MAX_BYTES = 1_500_000; // ~1.5MB decoded
 
 app.get('/api/users', async (_req, res) => {
   const users = await prisma.finUser.findMany({
@@ -123,6 +145,118 @@ app.get('/api/users', async (_req, res) => {
     orderBy: { name: 'asc' },
   });
   res.json(users.map(shapeUser));
+});
+
+/**
+ * The signed-in user.
+ *
+ * Defined before any `/api/users/:id` route so a literal path can never be
+ * swallowed by a parameter. The SPA uses it to render the sidebar avatar
+ * without shipping the base64 in the session JWT — that cookie has a ~4KB
+ * ceiling and an image would blow straight through it.
+ */
+app.get('/api/users/me', async (req, res) => {
+  const id = currentUserId(req);
+  if (!id) return res.status(401).json({ error: 'Not signed in' });
+
+  const user = await prisma.finUser.findUnique({
+    where: { id },
+    select: { ...USER_FIELDS, passwordHash: true },
+  });
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  res.json(shapeUser(user));
+});
+
+/**
+ * Serve the avatar as image bytes.
+ *
+ * Cached by ETag keyed on `updatedAt`, and the client appends `?v=updatedAt`
+ * to the URL, so replacing a picture produces a new URL and can never show a
+ * stale face. `private` because the response sits behind a session.
+ */
+app.get('/api/users/:id/avatar', async (req, res) => {
+  const user = await prisma.finUser.findUnique({
+    where: { id: req.params.id },
+    select: { avatar: true, avatarMime: true, updatedAt: true },
+  });
+  if (!user?.avatar || !user.avatarMime) {
+    return res.status(404).json({ error: 'No avatar set' });
+  }
+
+  const bytes = Buffer.from(user.avatar, 'base64');
+  const etag = `"${user.updatedAt.getTime()}-${bytes.length}"`;
+
+  res.set({
+    'Content-Type': user.avatarMime,
+    'Content-Length': String(bytes.length),
+    'Cache-Control': 'private, max-age=86400, must-revalidate',
+    ETag: etag,
+  });
+  if (req.headers['if-none-match'] === etag) return res.status(304).end();
+  res.end(bytes);
+});
+
+/**
+ * Set or replace an avatar from a base64 data URL.
+ *
+ * Any signed-in user may set anyone's picture, matching the password rule: this
+ * is a two-person household app, so the alternative is having no way to give
+ * the other person a photo.
+ */
+app.put('/api/users/:id/avatar', async (req, res) => {
+  const { id } = req.params;
+  const { dataUrl } = req.body ?? {};
+
+  if (typeof dataUrl !== 'string' || !dataUrl) {
+    return res.status(400).json({ error: 'Send the image as a base64 data URL' });
+  }
+
+  const match = dataUrl.match(/^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i);
+  if (!match) {
+    return res.status(400).json({ error: 'Expected a base64 image data URL' });
+  }
+  const mime = match[1].toLowerCase();
+  const base64 = match[2].replace(/\s/g, '');
+
+  if (!AVATAR_MIMES.has(mime)) {
+    return res
+      .status(400)
+      .json({ error: `Unsupported image type ${mime}. Use JPEG, PNG or WebP.` });
+  }
+
+  const bytes = Buffer.from(base64, 'base64');
+  if (bytes.length === 0) {
+    return res.status(400).json({ error: 'The image is empty' });
+  }
+  if (bytes.length > AVATAR_MAX_BYTES) {
+    const mb = (bytes.length / 1_048_576).toFixed(1);
+    return res.status(413).json({
+      error: `That image is ${mb}MB. Please use one under 1.5MB.`,
+    });
+  }
+
+  const exists = await prisma.finUser.findUnique({ where: { id }, select: { id: true } });
+  if (!exists) return res.status(404).json({ error: 'User not found' });
+
+  const user = await prisma.finUser.update({
+    where: { id },
+    data: { avatar: base64, avatarMime: mime },
+    select: { ...USER_FIELDS, passwordHash: true },
+  });
+  res.json(shapeUser(user));
+});
+
+app.delete('/api/users/:id/avatar', async (req, res) => {
+  const { id } = req.params;
+  const exists = await prisma.finUser.findUnique({ where: { id }, select: { id: true } });
+  if (!exists) return res.status(404).json({ error: 'User not found' });
+
+  const user = await prisma.finUser.update({
+    where: { id },
+    data: { avatar: null, avatarMime: null },
+    select: { ...USER_FIELDS, passwordHash: true },
+  });
+  res.json(shapeUser(user));
 });
 
 app.post('/api/users', async (req, res) => {

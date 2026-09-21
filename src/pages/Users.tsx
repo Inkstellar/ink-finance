@@ -1,16 +1,21 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useApi } from '../hooks/useApi';
 import { useSession } from '../hooks/useSession';
 import { apiPost, apiDelete, apiPut, ApiError } from '../lib/api';
+import { fileToAvatarDataUrl } from '../lib/image';
+import UserAvatar, { avatarUrl, AVATAR_CHANGED_EVENT } from '../components/UserAvatar';
 import {
   Alert, Box, Typography, Card, CardContent, Button, Dialog, DialogTitle, DialogContent,
   DialogActions, TextField, Table, TableBody, TableCell, TableContainer, TableHead,
-  TableRow, Paper, IconButton, Avatar, Chip, Stack, Tooltip
+  TableRow, Paper, IconButton, Chip, Stack, Tooltip, CircularProgress
 } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
 import EditIcon from '@mui/icons-material/Edit';
 import KeyIcon from '@mui/icons-material/VpnKey';
+import PhotoCameraIcon from '@mui/icons-material/PhotoCamera';
+import UploadIcon from '@mui/icons-material/Upload';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import { formatDate } from '../lib/format';
 
 interface User {
@@ -18,6 +23,7 @@ interface User {
   telegramId?: string | null;
   email?: string | null;
   hasPassword?: boolean;
+  hasAvatar?: boolean;
   createdAt?: string; updatedAt?: string;
 }
 
@@ -31,6 +37,14 @@ export default function Users() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // Profile picture, held until Save so Cancel really cancels.
+  const [avatarDataUrl, setAvatarDataUrl] = useState<string | null>(null);
+  const [avatarRemoved, setAvatarRemoved] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+  const uploadRef = useRef<HTMLInputElement>(null);
+  const cameraRef = useRef<HTMLInputElement>(null);
+
   // Password dialog
   const [pwUser, setPwUser] = useState<User | null>(null);
   const [pw, setPw] = useState({ current: '', next: '', confirm: '' });
@@ -41,10 +55,18 @@ export default function Users() {
   const meId = session?.user?.id;
   const isSelf = (u: User) => Boolean(meId && u.id === meId);
 
+  const resetAvatarState = () => {
+    setAvatarDataUrl(null);
+    setAvatarRemoved(false);
+    setAvatarBusy(false);
+    setAvatarError(null);
+  };
+
   const openAdd = () => {
     setEditUser(null);
     setForm(EMPTY_FORM);
     setFormError(null);
+    resetAvatarState();
     setOpen(true);
   };
 
@@ -58,7 +80,29 @@ export default function Users() {
       email: u.email || '',
     });
     setFormError(null);
+    resetAvatarState();
     setOpen(true);
+  };
+
+  /**
+   * Downscale the chosen file in the browser and preview it. The upload itself
+   * waits for Save, so cancelling the dialog leaves the stored picture alone.
+   */
+  const handleAvatarFile = async (file: File | undefined) => {
+    if (!file) return;
+    setAvatarBusy(true);
+    setAvatarError(null);
+    try {
+      setAvatarDataUrl(await fileToAvatarDataUrl(file));
+      setAvatarRemoved(false);
+    } catch (err) {
+      setAvatarError(err instanceof Error ? err.message : 'Could not read that image.');
+    } finally {
+      setAvatarBusy(false);
+      // Clear the input so picking the same file twice still fires onChange.
+      if (uploadRef.current) uploadRef.current.value = '';
+      if (cameraRef.current) cameraRef.current.value = '';
+    }
   };
 
   const handleSubmit = async () => {
@@ -71,8 +115,20 @@ export default function Users() {
       email: form.email.trim().toLowerCase() || null,
     };
     try {
-      if (editUser) await apiPut(`/api/users/${editUser.id}`, payload);
-      else await apiPost('/api/users', payload);
+      // The avatar needs a user id, so save the details first — a brand new
+      // user doesn't have one until this returns.
+      const saved = editUser
+        ? await apiPut<User>(`/api/users/${editUser.id}`, payload)
+        : await apiPost<User>('/api/users', payload);
+
+      if (avatarDataUrl) {
+        await apiPut(`/api/users/${saved.id}/avatar`, { dataUrl: avatarDataUrl });
+        window.dispatchEvent(new Event(AVATAR_CHANGED_EVENT));
+      } else if (avatarRemoved && editUser?.hasAvatar) {
+        await apiDelete(`/api/users/${saved.id}/avatar`);
+        window.dispatchEvent(new Event(AVATAR_CHANGED_EVENT));
+      }
+
       setOpen(false);
       refetch();
     } catch (err) {
@@ -156,9 +212,7 @@ export default function Users() {
             ) : usr.map((u) => (
               <TableRow key={u.id} hover>
                 <TableCell>
-                  <Avatar sx={{ width: 40, height: 40, bgcolor: u.color, fontSize: 18, fontWeight: 700 }}>
-                    {u.initials}
-                  </Avatar>
+                  <UserAvatar user={u} size={40} />
                 </TableCell>
                 <TableCell>
                   {u.name}
@@ -222,6 +276,96 @@ export default function Users() {
         <DialogContent>
           <Box sx={{ display: 'grid', gap: 2, mt: 1 }}>
             {formError && <Alert severity="error">{formError}</Alert>}
+
+            {/* ── Profile picture ── */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Box sx={{ position: 'relative' }}>
+                <UserAvatar
+                  user={{
+                    id: editUser?.id ?? 'preview',
+                    name: form.name || 'U',
+                    initials: form.initials || form.name.slice(0, 1).toUpperCase() || 'U',
+                    color: form.color,
+                    hasAvatar: Boolean(editUser?.hasAvatar),
+                    updatedAt: editUser?.updatedAt,
+                  }}
+                  size={72}
+                  // A pending upload is a data URL, not something the API serves;
+                  // marking the picture removed falls back to initials.
+                  src={avatarDataUrl ?? (avatarRemoved ? null : undefined)}
+                  sx={{ '& img': { objectFit: 'cover' } }}
+                />
+                {avatarBusy && (
+                  <CircularProgress
+                    size={72}
+                    sx={{ position: 'absolute', top: 0, left: 0 }}
+                  />
+                )}
+              </Box>
+
+              <Box sx={{ flex: 1 }}>
+                <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<UploadIcon />}
+                    onClick={() => uploadRef.current?.click()}
+                    disabled={avatarBusy}
+                  >
+                    Upload photo
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<PhotoCameraIcon />}
+                    onClick={() => cameraRef.current?.click()}
+                    disabled={avatarBusy}
+                  >
+                    Take photo
+                  </Button>
+                  {(avatarDataUrl || (!avatarRemoved && editUser?.hasAvatar)) && (
+                    <Button
+                      size="small"
+                      color="error"
+                      startIcon={<DeleteOutlineIcon />}
+                      onClick={() => {
+                        setAvatarDataUrl(null);
+                        setAvatarRemoved(true);
+                      }}
+                      disabled={avatarBusy}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </Stack>
+                <Typography variant="caption" color="text.secondary" display="block" sx={{ mt: 0.5 }}>
+                  Square images look best. Resized automatically.
+                </Typography>
+                {avatarError && (
+                  <Typography variant="caption" color="error.main" display="block" sx={{ mt: 0.5 }}>
+                    {avatarError}
+                  </Typography>
+                )}
+              </Box>
+
+              {/* `capture` makes a phone open the camera instead of the gallery. */}
+              <input
+                ref={uploadRef}
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={(e) => handleAvatarFile(e.target.files?.[0])}
+              />
+              <input
+                ref={cameraRef}
+                type="file"
+                accept="image/*"
+                capture="user"
+                hidden
+                onChange={(e) => handleAvatarFile(e.target.files?.[0])}
+              />
+            </Box>
+
             <TextField
               label="Name"
               value={form.name}

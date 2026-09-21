@@ -10,6 +10,7 @@ Personal finance manager for tracking home finances, personal investments, and l
 - **Investments** — Track stocks, mutual funds, ETFs, bonds, crypto, gold holdings with P&L
 - **Loans** — Track active loans (home, car, personal), record EMI payments, view amortization; edit any loan's terms, change its status, remove a mis-entered payment, or delete it
 - **Budget** — Set monthly budgets per category, track spending progress
+- **Users** — Manage household members, their logins and profile pictures
 - **Telegram Bot** — Send a photo of any bill/receipt/UPI screenshot to @inkfin_bot; AI vision extracts merchant, amount, date, and category, then you confirm with one tap
 
 ## Tech Stack
@@ -89,6 +90,7 @@ npm run user:set-password --user K              # also works
 
 # Verify the whole flow end-to-end against a running API
 npm run test:auth
+npm run test:avatar  # profile pictures: upload, serve, ETag, every rejection
 npm run test:loans
 npm run test:tx
 npm run test:bot     # pure analytics: templates, bucketing, reports
@@ -98,6 +100,31 @@ npm run test:bot     # pure analytics: templates, bucketing, reports
 > forwards only the bare value, so `npm run user:set-password --user K` really
 > runs `… K`. The script treats a non-email argument as the user selector, which
 > is why that form still works — but `--` is the correct spelling.
+
+**Profile pictures:** on the Users page, open a user and use **Upload photo**
+(gallery/files) or **Take photo**, which sets `capture="user"` on the file input
+so a phone opens the camera instead. The picture shows in the users table and in
+the sidebar, and replaces the initials everywhere. It is saved when you hit
+**Save**, so cancelling the dialog leaves the stored picture alone.
+
+How it works, and the constraints that shaped it:
+
+- The browser downscales to a **256px** square-ish JPEG before uploading
+  (`src/lib/image.ts`) — a 33KB phone photo becomes ~9KB, which keeps the upload
+  quick on mobile data. The API independently enforces its own limits; the
+  client-side resize is courtesy, not the security boundary.
+- Stored as base64 in `fin_users.avatar` (+ `avatarMime`), **not** a file on
+  disk: Render's filesystem is ephemeral, so a runtime-written file would vanish
+  on the next deploy.
+- Served as image bytes from `GET /api/users/:id/avatar` with an `ETag` and
+  `Cache-Control: private`, rather than embedded in JSON. `GET /api/users`
+  returns `hasAvatar` instead, so listing users doesn't carry image data.
+- The picture is deliberately **not** in the session JWT: an image would blow
+  past the ~4KB cookie limit. The sidebar fetches `/api/users/me` and refreshes
+  on an `ink:avatar-changed` event, so a new picture appears without a reload.
+- Applied to the database with `prisma/add-avatar-columns.sql` — the Render build
+  only runs `prisma generate`, so schema changes are applied by hand:
+  `npx prisma db execute --file prisma/add-avatar-columns.sql`
 
 Design notes worth knowing before changing anything here:
 

@@ -9,7 +9,6 @@ import {
   Box,
   Typography,
   Divider,
-  Avatar,
   Button,
   Stack,
   Tooltip,
@@ -27,6 +26,9 @@ import PieChartIcon from '@mui/icons-material/PieChart';
 import PeopleIcon from '@mui/icons-material/People';
 import LogoutIcon from '@mui/icons-material/Logout';
 import FinanceIcon from '@mui/icons-material/AccountBalance';
+import { useEffect } from 'react';
+import UserAvatar, { AVATAR_CHANGED_EVENT, type AvatarUser } from './UserAvatar';
+import { useApi } from '../hooks/useApi';
 import { signOut, type SessionUser } from '../lib/auth';
 
 const DRAWER_WIDTH = 260;
@@ -63,6 +65,28 @@ interface SidebarContentProps {
 
 function SidebarContent({ user, onClose }: SidebarContentProps) {
   const location = useLocation();
+
+  // The session JWT carries the user id, name and initials — but deliberately
+  // not the picture: a base64 image would blow past the ~4KB cookie limit. So
+  // the avatar comes from its own small request, refreshed when one is changed.
+  const { data: me, refetch: refetchMe } = useApi<AvatarUser>('/api/users/me');
+
+  useEffect(() => {
+    const onAvatarChanged = () => refetchMe();
+    window.addEventListener(AVATAR_CHANGED_EVENT, onAvatarChanged);
+    return () => window.removeEventListener(AVATAR_CHANGED_EVENT, onAvatarChanged);
+  }, [refetchMe]);
+
+  // Prefer the fetched record, but fall back to the session so the name and
+  // initials still render if that request is slow or fails.
+  const profileUser: AvatarUser = {
+    id: me?.id ?? user?.id ?? 'me',
+    name: me?.name ?? user?.name,
+    initials: me?.initials ?? user?.initials,
+    color: me?.color,
+    hasAvatar: me?.hasAvatar,
+    updatedAt: me?.updatedAt,
+  };
 
   return (
     <>
@@ -207,23 +231,19 @@ function SidebarContent({ user, onClose }: SidebarContentProps) {
                 },
               }}
             >
-              <Avatar
+              <UserAvatar
+                user={profileUser}
+                size={40}
+                fontSize={15}
                 sx={{
-                  width: 40,
-                  height: 40,
-                  fontSize: 15,
-                  fontWeight: 700,
-                  bgcolor: user.image || 'primary.main',
                   border: '2px solid',
                   borderColor: 'divider',
                 }}
-              >
-                {user.initials || (user.name ?? 'U').slice(0, 1).toUpperCase()}
-              </Avatar>
+              />
             </Badge>
             <Box sx={{ minWidth: 0, flex: 1 }}>
               <Typography variant="body2" fontWeight={600} noWrap>
-                {user.name}
+                {profileUser.name}
               </Typography>
               <Typography
                 variant="caption"

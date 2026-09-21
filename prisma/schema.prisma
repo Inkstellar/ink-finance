@@ -79,6 +79,14 @@ model FinUser {
   email        String?           @unique
   passwordHash String?
   telegramId   String?           @unique // link to Telegram account
+  // ── Profile picture ──────────────────────────────────────
+  // Stored inline as base64 rather than on disk: Render's filesystem is
+  // ephemeral, so a file written at runtime is lost on the next deploy.
+  // The browser downscales to ~256px before upload (~20KB), and the image is
+  // served from /api/users/:id/avatar so the base64 never travels in JSON
+  // lists — and never in the session JWT, which has a ~4KB cookie limit.
+  avatar       String?
+  avatarMime   String?
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
 
