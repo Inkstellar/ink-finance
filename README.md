@@ -5,6 +5,7 @@ Personal finance manager for tracking home finances, personal investments, and l
 ## Features
 
 - **Dashboard** — Net worth overview, monthly income/expense summary, recent transactions
+- **Accounts** — View and manage the accounts behind the net-worth figure; add, edit, archive and restore
 - **Transactions** — Record income, expenses, transfers, investment buys/sells, loan payments
 - **Investments** — Track stocks, mutual funds, ETFs, bonds, crypto, gold holdings with P&L
 - **Loans** — Track active loans (home, car, personal), record EMI payments, view amortization

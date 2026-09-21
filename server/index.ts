@@ -54,9 +54,12 @@ app.get('/api/health', (_req, res) => {
 
 // ─── Accounts ──────────────────────────────────────────────
 
-app.get('/api/accounts', async (_req, res) => {
+app.get('/api/accounts', async (req, res) => {
+  // Archived accounts are hidden everywhere else (transaction pickers, the bot,
+  // the dashboard), so the Accounts page opts in explicitly to manage them.
+  const includeArchived = req.query.includeArchived === 'true';
   const accounts = await prisma.finAccount.findMany({
-    where: { archived: false },
+    ...(includeArchived ? {} : { where: { archived: false } }),
     orderBy: { createdAt: 'asc' },
   });
   res.json(accounts);

@@ -2,6 +2,7 @@ import { Routes, Route } from 'react-router-dom';
 import { Box, CircularProgress } from '@mui/material';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
+import Accounts from './pages/Accounts';
 import Transactions from './pages/Transactions';
 import Investments from './pages/Investments';
 import Loans from './pages/Loans';
@@ -43,6 +44,7 @@ export default function App() {
       <Box component="main" sx={{ flexGrow: 1, p: 3, overflow: 'auto' }}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/accounts" element={<Accounts />} />
           <Route path="/transactions" element={<Transactions />} />
           <Route path="/investments" element={<Investments />} />
           <Route path="/loans" element={<Loans />} />
