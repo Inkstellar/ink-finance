@@ -1,6 +1,15 @@
+import { useState } from 'react';
+import {
+  Box,
+  CircularProgress,
+  AppBar,
+  Toolbar,
+  IconButton,
+  Typography,
+} from '@mui/material';
+import MenuIcon from '@mui/icons-material/Menu';
 import { Routes, Route } from 'react-router-dom';
-import { Box, CircularProgress } from '@mui/material';
-import Sidebar from './components/Sidebar';
+import Sidebar, { MobileDrawer } from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
 import Accounts from './pages/Accounts';
 import Transactions from './pages/Transactions';
@@ -11,8 +20,14 @@ import Users from './pages/Users';
 import Login from './pages/Login';
 import { useSession } from './hooks/useSession';
 
+const DRAWER_WIDTH = 260;
+
 export default function App() {
   const { session, loading, refetch } = useSession();
+  const [mobileOpen, setMobileOpen] = useState(false);
+
+  const handleMobileClose = () => setMobileOpen(false);
+  const handleMobileOpen = () => setMobileOpen(true);
 
   // Don't flash the login screen while the session is still being checked.
   if (loading) {
@@ -40,17 +55,65 @@ export default function App() {
 
   return (
     <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
+      {/* Desktop sidebar */}
       <Sidebar user={session.user} />
-      <Box component="main" sx={{ flexGrow: 1, p: 3, overflow: 'auto' }}>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/accounts" element={<Accounts />} />
-          <Route path="/transactions" element={<Transactions />} />
-          <Route path="/investments" element={<Investments />} />
-          <Route path="/loans" element={<Loans />} />
-          <Route path="/budget" element={<Budget />} />
-          <Route path="/users" element={<Users />} />
-        </Routes>
+
+      {/* Mobile drawer */}
+      <MobileDrawer
+        user={session.user}
+        open={mobileOpen}
+        onClose={handleMobileClose}
+      />
+
+      {/* Main content */}
+      <Box
+        sx={{
+          flexGrow: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          width: { xs: '100%', md: `calc(100% - ${DRAWER_WIDTH}px)` },
+        }}
+      >
+        {/* Mobile top bar */}
+        <AppBar
+          position="static"
+          sx={{
+            display: { xs: 'flex', md: 'none' },
+            bgcolor: 'background.paper',
+            color: 'text.primary',
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+          }}
+        >
+          <Toolbar>
+            <IconButton
+              size="large"
+              edge="start"
+              color="inherit"
+              aria-label="menu"
+              onClick={handleMobileOpen}
+              sx={{ mr: 2 }}
+            >
+              <MenuIcon />
+            </IconButton>
+            <Typography variant="h6" component="div" sx={{ flexGrow: 1 }}>
+              Ink Finance
+            </Typography>
+          </Toolbar>
+        </AppBar>
+
+        {/* Page content */}
+        <Box component="main" sx={{ flexGrow: 1, p: 3, overflow: 'auto' }}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/accounts" element={<Accounts />} />
+            <Route path="/transactions" element={<Transactions />} />
+            <Route path="/investments" element={<Investments />} />
+            <Route path="/loans" element={<Loans />} />
+            <Route path="/budget" element={<Budget />} />
+            <Route path="/users" element={<Users />} />
+          </Routes>
+        </Box>
       </Box>
     </Box>
   );

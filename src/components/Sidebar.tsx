@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import {
   Drawer,
   List,
@@ -14,6 +15,8 @@ import {
   Tooltip,
   Badge,
 } from '@mui/material';
+import MenuIcon from '@mui/icons-material/Menu';
+import CloseIcon from '@mui/icons-material/Close';
 import { Link, useLocation } from 'react-router-dom';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import ReceiptIcon from '@mui/icons-material/Receipt';
@@ -26,7 +29,7 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import FinanceIcon from '@mui/icons-material/AccountBalance';
 import { signOut, type SessionUser } from '../lib/auth';
 
-const drawerWidth = 260;
+const DRAWER_WIDTH = 260;
 
 const navGroups = [
   {
@@ -53,24 +56,16 @@ const navGroups = [
   },
 ];
 
-export default function Sidebar({ user }: { user?: SessionUser }) {
+interface SidebarContentProps {
+  user?: SessionUser;
+  onClose?: () => void;
+}
+
+function SidebarContent({ user, onClose }: SidebarContentProps) {
   const location = useLocation();
 
   return (
-    <Drawer
-      variant="permanent"
-      sx={{
-        width: drawerWidth,
-        flexShrink: 0,
-        '& .MuiDrawer-paper': {
-          width: drawerWidth,
-          boxSizing: 'border-box',
-          borderRight: '1px solid',
-          borderColor: 'divider',
-          backgroundImage: 'none',
-        },
-      }}
-    >
+    <>
       {/* Header */}
       <Toolbar
         sx={{
@@ -80,6 +75,8 @@ export default function Sidebar({ user }: { user?: SessionUser }) {
           borderColor: 'divider',
           background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
           color: 'white',
+          display: 'flex',
+          justifyContent: 'space-between',
         }}
       >
         <Stack direction="row" alignItems="center" spacing={1.5}>
@@ -105,6 +102,14 @@ export default function Sidebar({ user }: { user?: SessionUser }) {
             </Typography>
           </Box>
         </Stack>
+        {onClose && (
+          <Button
+            onClick={onClose}
+            sx={{ color: 'white', minWidth: 36, p: 0.5 }}
+          >
+            <CloseIcon />
+          </Button>
+        )}
       </Toolbar>
 
       {/* Navigation */}
@@ -120,6 +125,7 @@ export default function Sidebar({ user }: { user?: SessionUser }) {
                 fontWeight: 600,
                 textTransform: 'uppercase',
                 letterSpacing: '0.05em',
+                display: 'block',
               }}
             >
               {group.title}
@@ -133,6 +139,7 @@ export default function Sidebar({ user }: { user?: SessionUser }) {
                       component={Link}
                       to={item.path}
                       selected={active}
+                      onClick={onClose}
                       sx={{
                         mx: 1,
                         mb: 0.25,
@@ -234,7 +241,10 @@ export default function Sidebar({ user }: { user?: SessionUser }) {
           variant="outlined"
           color="error"
           startIcon={<LogoutIcon />}
-          onClick={() => signOut()}
+          onClick={() => {
+            signOut();
+            onClose?.();
+          }}
           sx={{
             justifyContent: 'flex-start',
             borderRadius: 2,
@@ -249,6 +259,60 @@ export default function Sidebar({ user }: { user?: SessionUser }) {
           Sign out
         </Button>
       </Box>
+    </>
+  );
+}
+
+interface SidebarProps {
+  user?: SessionUser;
+}
+
+export default function Sidebar({ user }: SidebarProps) {
+  return (
+    <Box
+      sx={{
+        display: { xs: 'none', md: 'block' },
+        width: DRAWER_WIDTH,
+        flexShrink: 0,
+      }}
+    >
+      <Drawer
+        variant="permanent"
+        sx={{
+          width: DRAWER_WIDTH,
+          flexShrink: 0,
+          '& .MuiDrawer-paper': {
+            width: DRAWER_WIDTH,
+            boxSizing: 'border-box',
+            borderRight: '1px solid',
+            borderColor: 'divider',
+          },
+        }}
+      >
+        <SidebarContent user={user} />
+      </Drawer>
+    </Box>
+  );
+}
+
+export function MobileDrawer({ user, open, onClose }: { user?: SessionUser; open: boolean; onClose: () => void }) {
+  return (
+    <Drawer
+      variant="temporary"
+      open={open}
+      onClose={onClose}
+      ModalProps={{ keepMounted: true }}
+      sx={{
+        display: { xs: 'block', md: 'none' },
+        '& .MuiDrawer-paper': {
+          boxSizing: 'border-box',
+          width: DRAWER_WIDTH,
+          borderRight: '1px solid',
+          borderColor: 'divider',
+        },
+      }}
+    >
+      <SidebarContent user={user} onClose={onClose} />
     </Drawer>
   );
 }
