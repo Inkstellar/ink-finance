@@ -69,6 +69,7 @@ async function csrf(jar) {
 async function main() {
   const email = `smoke-${Date.now()}@local.test`;
   const password = randomBytes(18).toString('base64url');
+  const newPassword = randomBytes(18).toString('base64url');
   const wrongPassword = randomBytes(18).toString('base64url');
 
   const user = await prisma.finUser.create({
@@ -121,6 +122,73 @@ async function main() {
       check('session carries initials', session?.user?.initials === 'ST');
       check('protected route allows the session', (await fetch(`${BASE}/api/transactions`, { headers: { cookie: jar.header() } })).status === 200);
       check('dashboard allows the session', (await fetch(`${BASE}/api/dashboard`, { headers: { cookie: jar.header() } })).status === 200);
+
+      // ── Users API ─────────────────────────────────────────
+      const listRes = await fetch(`${BASE}/api/users`, { headers: { cookie: jar.header() } });
+      const list = await listRes.json();
+      check('user list never exposes passwordHash', Array.isArray(list) && list.every((u) => !('passwordHash' in u)));
+      check('user list reports hasPassword', Array.isArray(list) && list.every((u) => typeof u.hasPassword === 'boolean'));
+
+      const jsonHeaders = () => ({ 'Content-Type': 'application/json', cookie: jar.header() });
+
+      const dup = await fetch(`${BASE}/api/users`, {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ name: 'Duplicate', email }),
+      });
+      check('duplicate email is rejected', dup.status === 409, `got ${dup.status}`);
+
+      // Changing your own password must not be possible from a borrowed
+      // session: the current password is required.
+      const noCurrent = await fetch(`${BASE}/api/users/${user.id}/password`, {
+        method: 'PUT',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ password: newPassword }),
+      });
+      check('own password change requires the current password', noCurrent.status === 400 || noCurrent.status === 403, `got ${noCurrent.status}`);
+
+      const wrongCurrent = await fetch(`${BASE}/api/users/${user.id}/password`, {
+        method: 'PUT',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ password: newPassword, currentPassword: wrongPassword }),
+      });
+      check('wrong current password is refused', wrongCurrent.status === 403, `got ${wrongCurrent.status}`);
+
+      const withCurrent = await fetch(`${BASE}/api/users/${user.id}/password`, {
+        method: 'PUT',
+        headers: jsonHeaders(),
+        body: JSON.stringify({ password: newPassword, currentPassword: password }),
+      });
+      check('own password change succeeds with the current password', withCurrent.status === 200, `got ${withCurrent.status}`);
+
+      // The new password must actually work.
+      {
+        const jar2 = new Jar();
+        const csrfToken2 = await csrf(jar2);
+        const res2 = await fetch(`${BASE}/api/auth/callback/credentials`, {
+          method: 'POST',
+          headers: callbackHeaders(jar2),
+          body: new URLSearchParams({ email, password: newPassword, csrfToken: csrfToken2, callbackUrl: BASE, redirect: 'false' }),
+        });
+        jar2.absorb(res2);
+        const body2 = await res2.json().catch(() => ({}));
+        check('sign-in works with the new password', !String(body2.url ?? '').includes('error='), body2.url ?? '');
+        check('the new session reaches protected data', (await fetch(`${BASE}/api/transactions`, { headers: { cookie: jar2.header() } })).status === 200);
+      }
+
+      // …and the old one must stop working.
+      {
+        const jar3 = new Jar();
+        const csrfToken3 = await csrf(jar3);
+        const res3 = await fetch(`${BASE}/api/auth/callback/credentials`, {
+          method: 'POST',
+          headers: callbackHeaders(jar3),
+          body: new URLSearchParams({ email, password, csrfToken: csrfToken3, callbackUrl: BASE, redirect: 'false' }),
+        });
+        jar3.absorb(res3);
+        const body3 = await res3.json().catch(() => ({}));
+        check('old password no longer works', String(body3.url ?? '').includes('error='), body3.url ?? '');
+      }
 
       // ── Sign out ──────────────────────────────────────────
       const signout = await fetch(`${BASE}/api/auth/signout`, {

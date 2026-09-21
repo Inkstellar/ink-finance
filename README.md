@@ -73,14 +73,27 @@ Open http://localhost:5179
 The whole app sits behind a login. Auth.js (`@auth/express`) guards the **API** —
 that is the real boundary — and the SPA renders a login screen in front of it.
 
+**Managing logins from the UI:** the **Users** page has an *Email (for login)*
+field and a key icon per row to set or change a password, so you rarely need the
+terminal. Setting your **own** password there asks for the current one; setting
+someone else's does not (it's a two-person household app, and there'd otherwise
+be no way to give the second person a first password). A user with an email but
+no password shows "no password set — cannot sign in".
+
 ```bash
-# Create or reset a login (prompts for the password, never stores it in plain text)
-npm run user:set-password
-#   npm run user:set-password -- --email you@example.com --user K   # attach to an existing user
+# From the terminal instead:
+npm run user:set-password                       # interactive, lists users to pick
+npm run user:set-password -- --user K           # attach a login to user K
+npm run user:set-password --user K              # also works
 
 # Verify the whole flow end-to-end against a running API
 npm run test:auth
 ```
+
+> **Why the `--` matters:** npm treats unknown `--flags` as *its own* config and
+> forwards only the bare value, so `npm run user:set-password --user K` really
+> runs `… K`. The script treats a non-email argument as the user selector, which
+> is why that form still works — but `--` is the correct spelling.
 
 Design notes worth knowing before changing anything here:
 

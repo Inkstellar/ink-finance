@@ -31,7 +31,16 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(401, 'Session expired — please sign in again.');
   }
   if (!res.ok) {
-    throw new ApiError(res.status, `API error: ${res.status} ${res.statusText}`);
+    // The API reports failures as { error: "..." } — surface that rather than
+    // a bare status code, since these messages are written for the user.
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.clone().json();
+      if (body?.error) detail = String(body.error);
+    } catch {
+      /* not JSON — keep the status text */
+    }
+    throw new ApiError(res.status, detail);
   }
   return res.json() as Promise<T>;
 }

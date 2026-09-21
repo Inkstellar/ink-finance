@@ -3,10 +3,11 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { ExpressAuth } from '@auth/express';
 import { authConfig } from './auth.js';
-import { requireApiAuth } from './auth-middleware.js';
+import { currentUserId, requireApiAuth } from './auth-middleware.js';
 
 const prisma = new PrismaClient();
 const app = express();
@@ -90,28 +91,143 @@ app.delete('/api/accounts/:id', async (req, res) => {
 
 // ─── Users ─────────────────────────────────────────────────
 
+/**
+ * Fields safe to send to a client. `passwordHash` must never be included — a
+ * bare `findMany` returns every column, which is exactly the leak to avoid.
+ */
+const USER_FIELDS = {
+  id: true,
+  name: true,
+  initials: true,
+  color: true,
+  email: true,
+  telegramId: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+/** Adds `hasPassword` for the UI without ever exposing the hash itself. */
+function shapeUser<T extends { passwordHash?: string | null }>(user: T) {
+  const { passwordHash, ...rest } = user;
+  return { ...rest, hasPassword: Boolean(passwordHash) };
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 app.get('/api/users', async (_req, res) => {
-  const users = await prisma.finUser.findMany({ orderBy: { name: 'asc' } });
-  res.json(users);
+  const users = await prisma.finUser.findMany({
+    select: { ...USER_FIELDS, passwordHash: true },
+    orderBy: { name: 'asc' },
+  });
+  res.json(users.map(shapeUser));
 });
 
 app.post('/api/users', async (req, res) => {
-  const { name, initials, color, telegramId } = req.body;
+  const { name, initials, color, telegramId, email, password } = req.body;
+
+  if (!name) return res.status(400).json({ error: 'Name is required' });
+
+  const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
+  if (normalizedEmail && !EMAIL_RE.test(normalizedEmail)) {
+    return res.status(400).json({ error: 'That does not look like an email address' });
+  }
+  if (password && String(password).length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  }
+  if (normalizedEmail) {
+    const clash = await prisma.finUser.findUnique({ where: { email: normalizedEmail } });
+    if (clash) return res.status(409).json({ error: `${normalizedEmail} is already in use` });
+  }
+
   const user = await prisma.finUser.create({
-    data: { name, initials: initials || name.slice(0, 1).toUpperCase(), color: color || '#7c3aed', telegramId },
+    data: {
+      name,
+      initials: initials || name.slice(0, 1).toUpperCase(),
+      color: color || '#7c3aed',
+      telegramId: telegramId || null,
+      email: normalizedEmail,
+      passwordHash: password ? await bcrypt.hash(String(password), 12) : null,
+    },
+    select: { ...USER_FIELDS, passwordHash: true },
   });
-  res.json(user);
+  res.json(shapeUser(user));
 });
 
 app.put('/api/users/:id', async (req, res) => {
   const { id } = req.params;
-  const { name, initials, color, telegramId } = req.body;
-  const user = await prisma.finUser.update({ where: { id }, data: { name, initials, color, telegramId } });
-  res.json(user);
+  const { name, initials, color, telegramId, email, password } = req.body;
+
+  const normalizedEmail =
+    email === undefined ? undefined : email ? String(email).trim().toLowerCase() : null;
+  if (normalizedEmail && !EMAIL_RE.test(normalizedEmail)) {
+    return res.status(400).json({ error: 'That does not look like an email address' });
+  }
+  if (password && String(password).length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  }
+  if (normalizedEmail) {
+    const clash = await prisma.finUser.findUnique({ where: { email: normalizedEmail } });
+    if (clash && clash.id !== id) {
+      return res.status(409).json({ error: `${normalizedEmail} is already in use` });
+    }
+  }
+
+  const user = await prisma.finUser.update({
+    where: { id },
+    data: {
+      ...(name !== undefined ? { name } : {}),
+      ...(initials !== undefined ? { initials } : {}),
+      ...(color !== undefined ? { color } : {}),
+      ...(telegramId !== undefined ? { telegramId: telegramId || null } : {}),
+      ...(normalizedEmail !== undefined ? { email: normalizedEmail } : {}),
+      ...(password ? { passwordHash: await bcrypt.hash(String(password), 12) } : {}),
+    },
+    select: { ...USER_FIELDS, passwordHash: true },
+  });
+  res.json(shapeUser(user));
+});
+
+/**
+ * Change a password.
+ *
+ * Changing *your own* requires the current one, so a borrowed session can't be
+ * used to lock its owner out. Setting someone else's is allowed for any
+ * authenticated user: this is a two-person household app, and the alternative
+ * is having no way to give the second person a first password.
+ */
+app.put('/api/users/:id/password', async (req, res) => {
+  const { id } = req.params;
+  const { password, currentPassword } = req.body ?? {};
+
+  if (!password || String(password).length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  }
+
+  const target = await prisma.finUser.findUnique({ where: { id } });
+  if (!target) return res.status(404).json({ error: 'User not found' });
+
+  if (currentUserId(req) === id) {
+    if (!currentPassword) {
+      return res.status(400).json({ error: 'Enter your current password' });
+    }
+    const ok =
+      target.passwordHash && (await bcrypt.compare(String(currentPassword), target.passwordHash));
+    if (!ok) return res.status(403).json({ error: 'Current password is incorrect' });
+  }
+
+  const user = await prisma.finUser.update({
+    where: { id },
+    data: { passwordHash: await bcrypt.hash(String(password), 12) },
+    select: { ...USER_FIELDS, passwordHash: true },
+  });
+  res.json(shapeUser(user));
 });
 
 app.delete('/api/users/:id', async (req, res) => {
   const { id } = req.params;
+  if (currentUserId(req) === id) {
+    return res.status(400).json({ error: 'You cannot delete the account you are signed in as' });
+  }
   await prisma.finUser.delete({ where: { id } });
   res.json({ success: true });
 });

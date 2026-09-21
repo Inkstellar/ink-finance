@@ -23,6 +23,20 @@ const PUBLIC_PATHS = ['/api/health'];
 /** Prefixes handled by Auth.js itself, which must not be gated. */
 const PUBLIC_PREFIXES = ['/api/auth/'];
 
+/** The session Auth.js resolved for this request, if any (absent for the bot). */
+interface AuthedSession {
+  user?: { id?: string; name?: string | null; email?: string | null };
+}
+
+export function getSessionUser(req: Request): AuthedSession['user'] {
+  return (req as Request & { authSession?: AuthedSession }).authSession?.user;
+}
+
+/** Id of the signed-in browser user; undefined for service-token callers. */
+export function currentUserId(req: Request): string | undefined {
+  return getSessionUser(req)?.id;
+}
+
 function safeEqual(a: string, b: string): boolean {
   const bufA = Buffer.from(a);
   const bufB = Buffer.from(b);
@@ -57,7 +71,7 @@ export async function requireApiAuth(
   try {
     const session = await getSession(req, authConfig);
     if (session?.user) {
-      (req as Request & { session?: unknown }).session = session;
+      (req as Request & { authSession?: unknown }).authSession = session;
       next();
       return;
     }
