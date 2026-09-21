@@ -409,7 +409,16 @@ export default function Users() {
               label="Telegram ID (optional)"
               value={form.telegramId}
               onChange={(e) => setForm({ ...form, telegramId: e.target.value })}
-              helperText="Numeric id — send /start to the bot and it fills this in for you. Needed to receive transaction alerts."
+              // A @username here looks right and silently breaks alerts: the Bot
+              // API answers "chat not found" for one, and cannot look up the
+              // number behind it. Saved anyway — the bot repairs it on the
+              // owner's next message — but not without saying so.
+              error={/^@/.test(form.telegramId.trim())}
+              helperText={
+                /^@/.test(form.telegramId.trim())
+                  ? 'That is a username, and Telegram does not let a bot message one — alerts will not be delivered. Send /start to the bot and paste the number it shows.'
+                  : 'Numeric id — send /start to the bot and it fills this in for you. Needed to receive transaction alerts.'
+              }
               fullWidth
             />
           </Box>

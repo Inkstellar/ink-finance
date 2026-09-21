@@ -7,7 +7,12 @@
  * id stays as an `@username` never receives a transaction alert, and two rows
  * holding the same chat would each get a copy of every alert.
  */
-import { normalizeUsername, planTelegramLink, type LinkableUser } from '../telegram-bot/link.js';
+import {
+  findUserByNumericId,
+  normalizeUsername,
+  planTelegramLink,
+  type LinkableUser,
+} from '../telegram-bot/link.js';
 
 let pass = 0;
 let fail = 0;
@@ -114,6 +119,37 @@ eq(
   'a negative group id is accepted',
   planTelegramLink(users(['u1', 'Home', '@ink']), { id: -1001234567890, username: 'ink' }),
   { userId: 'u1', name: 'Home', from: '@ink', to: '-1001234567890' },
+);
+
+console.log('\n  is this sender linked?');
+// Drives the "✅ Alerts on" / "⚠️ Alerts not set up" line in /start, so a wrong
+// answer here either claims alerts work when they do not, or sends someone off
+// to fix something that is already fine.
+eq(
+  'a numeric holder is found',
+  findUserByNumericId(users(['u1', 'Kousi', '12345']), 12345)?.name,
+  'Kousi',
+);
+eq(
+  'a numeric id given as a string still matches',
+  findUserByNumericId(users(['u1', 'Kousi', '12345']), '12345')?.name,
+  'Kousi',
+);
+eq(
+  'a username holder is not a match — they cannot receive anything yet',
+  findUserByNumericId(users(['u1', 'Kousi', '@the_inkstellar']), 12345),
+  undefined,
+);
+eq(
+  'an unlinked sender is not a match',
+  findUserByNumericId(users(['u1', 'Kousi', '999']), 12345),
+  undefined,
+);
+eq('an empty user list finds nobody', findUserByNumericId([], 12345), undefined);
+eq(
+  'a blank id finds nobody',
+  findUserByNumericId(users(['u1', 'Kousi', '12345']), '  '),
+  undefined,
 );
 
 console.log(`\n  ${pass} passed, ${fail} failed\n`);

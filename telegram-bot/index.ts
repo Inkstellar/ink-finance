@@ -13,7 +13,7 @@ import {
 import type {
   PendingTransaction, PendingLoan, ReceiptAnalysis, FinUser, TransactionRow,
 } from './types';
-import { planTelegramLink } from './link';
+import { findUserByNumericId, planTelegramLink } from './link';
 
 // ── Config ────────────────────────────────────────────────
 const BOT_TOKEN = process.env.BOT_TOKEN!;
@@ -465,8 +465,38 @@ bot.use(async (ctx, next) => {
   return next();
 });
 
+/**
+ * Whether this sender's numeric id is stored against one of our users, i.e.
+ * whether transaction alerts can actually reach them.
+ */
+async function alertStatus(telegramUserId: number | string): Promise<{ name?: string }> {
+  const users = await api.getUsers();
+  return { name: findUserByNumericId(users, telegramUserId)?.name };
+}
+
 // ── /start ─────────────────────────────────────────────────
 bot.start(async ctx => {
+  // Repair first, then report: the status below has to describe the state after
+  // this message, not before it.
+  await linkTelegramId(ctx);
+
+  // The numeric id is the only thing the Bot API will accept as a recipient, and
+  // it cannot be looked up from a username — so this is where a person finds it.
+  // Left blank if the lookup fails: a transient API error must not be reported
+  // as "your alerts are broken".
+  let alertsLine = '';
+  try {
+    const { name } = await alertStatus(ctx.from.id);
+    alertsLine = name
+      ? `✅ *Alerts on:* the others are told whenever you add a transaction,` +
+        ` and you are told whenever they do.`
+      : `⚠️ *Alerts not set up:* nobody is told about your entries yet.\n` +
+        `Copy the number above into the *Telegram ID* field on the Users page.\n` +
+        `_A @username will not work — Telegram does not let a bot message one._`;
+  } catch {
+    alertsLine = '';
+  }
+
   await ctx.reply(
     `👋 *Welcome to Ink Finance Bot!*\n\n` +
     `📸 Send a photo of a bill, receipt, or UPI payment screenshot —\n` +
@@ -474,8 +504,8 @@ bot.start(async ctx => {
     `✍️ Or type it: \`spent 500 groceries at Reliance\`\n` +
     `🏦 Or add a loan: \`loan 5000000 -> Housing -> Kousi\`\n\n` +
     `Send /help to see every command.\n\n` +
-    `Your Telegram ID: \`${ctx.from.id}\`\n` +
-    `Add this to BOT_ALLOWED_USERS in .env to restrict access.`,
+    `Your Telegram ID: \`${ctx.from.id}\`` +
+    (alertsLine ? `\n\n${alertsLine}` : ''),
     { parse_mode: 'Markdown' },
   );
 });

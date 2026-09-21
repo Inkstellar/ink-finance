@@ -49,6 +49,21 @@ function storedId(value: unknown): string {
 }
 
 /**
+ * The user a numeric Telegram id belongs to, if any.
+ *
+ * The single definition of "this chat id is linked", used both to decide
+ * whether a repair is needed and to tell someone whether their alerts are on.
+ */
+export function findUserByNumericId(
+  users: LinkableUser[],
+  telegramUserId: number | string,
+): LinkableUser | undefined {
+  const numeric = storedId(telegramUserId);
+  if (!numeric) return undefined;
+  return users.find((u) => storedId(u.telegramId) === numeric);
+}
+
+/**
  * What to change, or `null` when there is nothing to do.
  *
  * The numeric match is checked first, and deliberately so: if one user already
@@ -63,8 +78,7 @@ export function planTelegramLink(
   const numeric = storedId(sender.id);
   if (!numeric) return null;
 
-  const byNumericId = users.find((u) => storedId(u.telegramId) === numeric);
-  if (byNumericId) return null;
+  if (findUserByNumericId(users, numeric)) return null;
 
   const handle = sender.username ? normalizeUsername(sender.username) : '';
   if (!handle) return null;
