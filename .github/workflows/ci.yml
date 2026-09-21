@@ -1,0 +1,51 @@
+name: CI
+
+# Runs on pull requests and on pushes to working branches, so a type error or
+# a broken unit test is caught before it reaches main and triggers a deploy.
+#
+# Deliberately needs no secrets: `prisma generate` reads the schema but never
+# connects, and the tests here are pure. The DB-backed smoke tests
+# (test:privacy, test:tx, test:loans, test:avatar, test:auth) talk to a real
+# Postgres and a running API, so they stay local — run them against a dev
+# server before merging.
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: typecheck, unit tests, build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate the Prisma client
+        run: npx prisma generate
+
+      - name: Typecheck both the app and the server
+        run: npm run typecheck
+
+      - name: Bot analytics unit tests
+        run: npm run test:bot
+
+      - name: Deploy-workflow path classification
+        run: node scripts/deploy-paths.test.mjs
+
+      - name: Build the web bundle and the server
+        run: npm run build && npm run build:server
