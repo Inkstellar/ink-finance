@@ -409,7 +409,7 @@ export default function Users() {
               label="Telegram ID (optional)"
               value={form.telegramId}
               onChange={(e) => setForm({ ...form, telegramId: e.target.value })}
-              helperText="Link Telegram account for auto-assignment"
+              helperText="Numeric id — send /start to the bot and it fills this in for you. Needed to receive transaction alerts."
               fullWidth
             />
           </Box>

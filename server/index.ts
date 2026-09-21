@@ -7,7 +7,8 @@ import bcrypt from 'bcryptjs';
 import { PrismaClient } from '@prisma/client';
 import { ExpressAuth } from '@auth/express';
 import { authConfig } from './auth.js';
-import { currentUserId, requireApiAuth } from './auth-middleware.js';
+import { currentUserId, isServiceCall, requireApiAuth } from './auth-middleware.js';
+import { notifyTransaction } from '../shared/notify.js';
 
 const prisma = new PrismaClient();
 const app = express();
@@ -500,6 +501,11 @@ app.post('/api/transactions', async (req, res) => {
   }
 
   res.json(withPublicUser(tx));
+
+  // Deliberately not awaited — see announceTransaction.
+  announceTransaction(tx, resolveActor(req)).catch((err) =>
+    console.error('[notify] unexpected failure:', err),
+  );
 });
 
 app.delete('/api/transactions/:id', async (req, res) => {
@@ -507,6 +513,111 @@ app.delete('/api/transactions/:id', async (req, res) => {
   await prisma.finTransaction.delete({ where: { id } });
   res.json({ success: true });
 });
+
+// ─── Transaction alerts ─────────────────────────────────────
+
+/**
+ * Deep link back into the app, used by the "Open in app" button. Optional: the
+ * alert is still useful without it, so a missing WEB_URL degrades rather than
+ * breaks.
+ */
+const WEB_URL = (process.env.WEB_URL ?? '').replace(/\/+$/, '');
+
+/** Stored transaction dates are UTC midnight of the intended IST calendar day. */
+function istDay(date: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+/**
+ * Who to leave out of the alert.
+ *
+ * A browser session knows its own user id, so it is taken at face value. The
+ * bot has no session, so it names the actor in headers — honoured only because
+ * the request proved it holds the service token. Without that check any
+ * signed-in user could name someone else and silence their alerts.
+ */
+function resolveActor(req: express.Request): { userId?: string; telegramId?: string } {
+  const sessionId = currentUserId(req);
+  if (sessionId) return { userId: sessionId };
+
+  if (isServiceCall(req)) {
+    return {
+      userId: req.get('x-actor-user-id') || undefined,
+      telegramId: req.get('x-actor-telegram-id') || undefined,
+    };
+  }
+  return {};
+}
+
+interface AnnounceableTransaction {
+  id: string;
+  type: string;
+  amount: number;
+  date: Date;
+  description: string | null;
+  accountId: string;
+  toAccountId: string | null;
+  category?: { name: string } | null;
+  user?: { name: string } | null;
+}
+
+/**
+ * Tell the other users a transaction was added.
+ *
+ * Every user with a Telegram id hears about it except whoever entered it —
+ * being alerted to your own action is noise, and the whole point is that the
+ * other person in the household finds out.
+ *
+ * Called without `await` after the response is sent: a Telegram round trip must
+ * not sit inside "save this transaction", and an alert that fails must never
+ * fail the write that caused it.
+ */
+async function announceTransaction(
+  tx: AnnounceableTransaction,
+  actor: { userId?: string; telegramId?: string },
+): Promise<void> {
+  const users = await prisma.finUser.findMany({
+    select: { id: true, name: true, telegramId: true },
+    orderBy: { name: 'asc' },
+  });
+
+  // Re-read: the balances moved after the row was inserted, and the new figure
+  // is the interesting one.
+  const [account, toAccount] = await Promise.all([
+    prisma.finAccount.findUnique({ where: { id: tx.accountId } }),
+    tx.toAccountId ? prisma.finAccount.findUnique({ where: { id: tx.toAccountId } }) : null,
+  ]);
+
+  const result = await notifyTransaction({
+    users,
+    actorUserId: actor.userId ?? null,
+    actorTelegramId: actor.telegramId ?? null,
+    webUrl: WEB_URL ? `${WEB_URL}/transactions` : null,
+    notice: {
+      type: tx.type,
+      amount: tx.amount,
+      date: istDay(tx.date),
+      description: tx.description,
+      categoryName: tx.category?.name ?? null,
+      accountName: account?.name ?? null,
+      toAccountName: toAccount?.name ?? null,
+      ownerName: tx.user?.name ?? null,
+      actorName: users.find((u) => u.id === actor.userId)?.name ?? null,
+      balanceAfter: account?.balance ?? null,
+    },
+  });
+
+  const skipped = result.skipped.map((s) => `${s.name} (${s.reason})`).join(', ');
+  console.log(
+    `[notify] ${tx.type} ${tx.id.slice(-6)} — sent ${result.sent}, failed ${result.failed}` +
+      (skipped ? `, skipped: ${skipped}` : ''),
+  );
+}
 
 // ─── Budgets ────────────────────────────────────────────────
 

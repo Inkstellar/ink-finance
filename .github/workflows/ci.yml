@@ -44,6 +44,12 @@ jobs:
       - name: Bot analytics unit tests
         run: npm run test:bot
 
+      - name: Transaction alert unit tests
+        run: npm run test:notify
+
+      - name: Telegram id linking unit tests
+        run: npm run test:link
+
       - name: Deploy-workflow path classification
         run: node scripts/deploy-paths.test.mjs
 

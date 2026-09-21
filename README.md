@@ -93,7 +93,10 @@ npm run test:auth
 npm run test:avatar  # profile pictures: upload, serve, ETag, every rejection
 npm run test:loans
 npm run test:tx
+npm run test:privacy # no endpoint leaks a password hash or an avatar
+npm run test:alerts  # transaction alerts: who is messaged, and who is not
 npm run test:bot     # pure analytics: templates, bucketing, reports
+npm run test:notify  # pure: alert wording, escaping, recipient selection
 ```
 
 > **Why the `--` matters:** npm treats unknown `--flags` as *its own* config and
@@ -239,6 +242,49 @@ the Loans page if you need to split interest).
 
 Reports show totals in and out, a by-category breakdown, then the rows themselves.
 
+### Transaction alerts
+
+Whenever a transaction is added, every *other* user is messaged on Telegram —
+whoever entered it is left out, since being told about your own action is
+noise. It works from both directions:
+
+- entered in the **web UI** → the API alerts the others
+- entered via the **bot** (receipt photo or template) → the bot tells the API
+  who sent it, and the API alerts the others
+
+The alert names the amount, description, category, account and date, the
+account's new balance, and who added it, with a button back into the app:
+
+```
+💸 New expense
+
+💰 -₹1,500.00
+📝 bus ticket
+🏷 Transport
+💳 HDC (Kousi)
+📅 20 Sep 2026
+
+⚖️ HDC now ₹48,500.00
+
+👤 Added by Kousi
+```
+
+Only users with a Telegram id set on the Users page receive alerts. The wording
+lives in `shared/notify.ts`, imported by both the API and the bot, so the two
+paths cannot drift. Alerts are sent *after* the response and never throw: a
+Telegram failure cannot fail the transaction that caused it.
+
+Set `WEB_URL` on the API service for the "Open in app" button; without it the
+alert is sent without the button.
+
+**The id must be numeric.** The Bot API cannot deliver a private message to an
+`@username` — `sendMessage` answers `400 chat not found` — so a handle typed
+into the Users page looks correct and silently breaks alerts. You do not have to
+copy the number yourself: the numeric id is only knowable while someone is
+talking to the bot, so **the first message either of you sends the bot upgrades
+their stored `@username` to the numeric id automatically** (`telegram-bot/link.ts`).
+Send `/start` once and alerts start working.
+
 ## API Server
 
 The Express API server runs on port 3456 with these endpoints:
@@ -258,12 +304,20 @@ The Express API server runs on port 3456 with these endpoints:
 | POST | `/api/loans/:id/payment` | Record loan EMI payment |
 | PUT | `/api/loans/:id` | Update loan status |
 
+`POST /api/transactions` accepts two optional headers, `X-Actor-User-Id` and
+`X-Actor-Telegram-Id`, naming who entered the transaction so their alert can be
+skipped. They are honoured **only** from a caller holding the service token —
+a browser session names its own user, so it cannot silence someone else's alert
+by claiming to be them.
+
 ## Project Structure
 
 ```
 ink-finance/
 ├── prisma/
 │   └── schema.prisma       # Database models (fin_* tables)
+├── shared/
+│   └── notify.ts            # "transaction added" alerts (API + bot share this)
 ├── server/
 │   └── index.ts             # Express API server
 ├── telegram-bot/            # Telegram bot service

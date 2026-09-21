@@ -13,6 +13,7 @@ import {
 import type {
   PendingTransaction, PendingLoan, ReceiptAnalysis, FinUser, TransactionRow,
 } from './types';
+import { planTelegramLink } from './link';
 
 // ── Config ────────────────────────────────────────────────
 const BOT_TOKEN = process.env.BOT_TOKEN!;
@@ -417,6 +418,39 @@ async function startLoanFlow(ctx: FlowCtx, text: string): Promise<boolean> {
 // ── Bot setup ─────────────────────────────────────────────
 const bot = new Telegraf<Context<Update>>(BOT_TOKEN);
 
+/**
+ * Store the sender's numeric Telegram id against their app user.
+ *
+ * The Bot API cannot send a private message to an `@username` — `sendMessage`
+ * answers `400 chat not found` — so a username typed into the Users page looks
+ * fine and silently breaks transaction alerts. The numeric id is only knowable
+ * while the user is talking to us (`ctx.from.id`), so this repairs the stored
+ * value on any message, including the `@username` → id upgrade.
+ *
+ * Deliberately not memoised. A cache of "already checked" senders would be
+ * wrong in a very ordinary sequence: message the bot before setting an id, then
+ * add an `@username` on the Users page, and the repair would be skipped until
+ * the next restart. One extra lookup per message is a fair price for not
+ * silently dropping alerts.
+ *
+ * Best-effort: a failure here must never stop the update being handled.
+ */
+async function linkTelegramId(ctx: Context<Update>): Promise<void> {
+  const from = ctx.from;
+  if (!from || from.is_bot) return;
+
+  try {
+    const users = await api.getUsers();
+    const plan = planTelegramLink(users, { id: from.id, username: from.username });
+    if (!plan) return;
+
+    await api.updateUser(plan.userId, { telegramId: plan.to });
+    console.log(`[link] ${plan.name}: ${plan.from} → ${plan.to} (alerts will now reach them)`);
+  } catch (err) {
+    console.warn('[link] could not update the telegram id:', err instanceof Error ? err.message : err);
+  }
+}
+
 // Auth middleware
 bot.use(async (ctx, next) => {
   const uid = ctx.from?.id;
@@ -426,6 +460,8 @@ bot.use(async (ctx, next) => {
       `⛔ You are not authorised to use this bot.\nYour Telegram ID: ${uid}`,
     );
   }
+  // Not awaited: the reply should not wait on a database round trip.
+  void linkTelegramId(ctx);
   return next();
 });
 
@@ -1141,6 +1177,14 @@ bot.action(/tx:(.+):(.+)/, async ctx => {
     const fromAccountId = isTransfer ? p.accountId! : accountId;
     const toAccountId = isTransfer ? accountId : undefined;
 
+    // The sender is the actor, which is not necessarily the owner — you can
+    // file a receipt on someone else's behalf. The API alerts everyone except
+    // the actor, so it has to be told who that is.
+    const users = await api.getUsers();
+    const sender = users.find(
+      u => u.telegramId && String(u.telegramId) === String(ctx.from.id),
+    );
+
     await api.createTransaction({
       amount: p.analysis.amount,
       type: p.analysis.type,
@@ -1154,7 +1198,7 @@ bot.action(/tx:(.+):(.+)/, async ctx => {
       categoryId: p.categoryId,
       userId: p.userId || null,
       ...(toAccountId ? { toAccountId } : {}),
-    });
+    }, { userId: sender?.id, telegramId: ctx.from.id });
 
     // A loan payment entered from a template should move the loan too,
     // otherwise the EMI would exist as a transaction but the loan would still
@@ -1183,7 +1227,7 @@ bot.action(/tx:(.+):(.+)/, async ctx => {
     const accounts = await api.getAccounts();
     const from = accounts.find(a => a.id === fromAccountId);
     const to = toAccountId ? accounts.find(a => a.id === toAccountId) : undefined;
-    const user = p.userId ? (await api.getUsers()).find(u => u.id === p.userId) : undefined;
+    const user = p.userId ? users.find(u => u.id === p.userId) : undefined;
 
     await ctx.editMessageText(
       `✅ *${isTransfer ? 'Transfer recorded' : 'Transaction created'}!*\n\n` +

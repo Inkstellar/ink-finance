@@ -51,6 +51,10 @@ services:
         sync: false
       - key: BOT_TOKEN
         sync: false
+      # Used to build the "Open in app" button on transaction alerts. Optional:
+      # without it the alert is sent with no button.
+      - key: WEB_URL
+        value: https://ink-finance-web.onrender.com
       - key: AI_API_KEY
         sync: false
       - key: AI_BASE_URL

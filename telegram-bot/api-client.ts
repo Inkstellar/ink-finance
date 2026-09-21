@@ -36,10 +36,14 @@ export class FinanceApiClient {
     return res.json() as Promise<T>;
   }
 
-  private async postJson<T>(path: string, body: unknown): Promise<T> {
+  private async postJson<T>(
+    path: string,
+    body: unknown,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
-      headers: this.headers({ 'Content-Type': 'application/json' }),
+      headers: this.headers({ 'Content-Type': 'application/json', ...extraHeaders }),
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
@@ -90,16 +94,42 @@ export class FinanceApiClient {
     return this.getJson<TransactionRow[]>(`/api/transactions${suffix}`);
   }
 
+  /**
+   * Create a transaction.
+   *
+   * `actor` names whoever typed it in. The API sends the other users a Telegram
+   * alert and has to know who to leave out — being told about your own entry is
+   * noise. The bot has no session, so it passes the actor as headers; the API
+   * honours them only from a caller holding the service token.
+   */
   async createTransaction(
     payload: CreateTransactionPayload,
+    actor?: { userId?: string | null; telegramId?: string | number | null },
   ): Promise<Record<string, unknown>> {
-    return this.postJson('/api/transactions', payload);
+    const headers: Record<string, string> = {};
+    if (actor?.userId) headers['X-Actor-User-Id'] = actor.userId;
+    if (actor?.telegramId != null) headers['X-Actor-Telegram-Id'] = String(actor.telegramId);
+    return this.postJson('/api/transactions', payload, headers);
   }
 
   // ── Users ───────────────────────────────────────────────
 
   async getUsers(): Promise<FinUser[]> {
     return this.getJson<FinUser[]>('/api/users');
+  }
+
+  /** Partial update — omitted fields are left alone. */
+  async updateUser(
+    id: string,
+    data: { name?: string; initials?: string; color?: string; telegramId?: string | null; email?: string | null },
+  ): Promise<FinUser> {
+    const res = await fetch(`${this.baseUrl}/api/users/${id}`, {
+      method: 'PUT',
+      headers: this.headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(data),
+    });
+    if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+    return res.json() as Promise<FinUser>;
   }
 
   // ── Loans ───────────────────────────────────────────────

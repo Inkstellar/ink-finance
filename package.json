@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Personal finance manager \u2014 home finances, investments, and loans tracking.",
+  "description": "Personal finance manager — home finances, investments, and loans tracking.",
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"npm run server\" \"npm run web\"",
     "dev:web": "npm run web",
@@ -36,7 +36,10 @@
     "test:tx": "node scripts/transactions-smoke.mjs",
     "test:avatar": "node scripts/avatar-smoke.mjs",
     "test:privacy": "node scripts/privacy-smoke.mjs",
-    "test:deploy-paths": "node scripts/deploy-paths.test.mjs"
+    "test:deploy-paths": "node scripts/deploy-paths.test.mjs",
+    "test:notify": "tsx scripts/notify.test.ts",
+    "test:alerts": "node scripts/transaction-alert-smoke.mjs",
+    "test:link": "tsx scripts/telegram-link.test.ts"
   },
   "dependencies": {
     "@auth/express": "^0.12.3",
