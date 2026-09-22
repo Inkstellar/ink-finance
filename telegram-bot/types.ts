@@ -2,6 +2,43 @@
 
 import type { TxType } from './analytics';
 
+/**
+ * Product fields the scraper pulls off a shopping page. Everything except the
+ * name is nullable: a page can hide its price, and the model is told to answer
+ * `null` rather than guess.
+ */
+export interface ProductDetails {
+  name: string;
+  price: number | null;
+  currency: string;
+  imageUrl: string | null;
+  description: string | null;
+  reviews: string | null;
+}
+
+/**
+ * A scraped product held in memory between "here is what I found" and the tap
+ * on **Add to wishlist**. `senderId` is the household member whose Telegram id
+ * sent the link, so the saved item can be attributed to them.
+ */
+export interface PendingWishlistItem {
+  productUrl: string;
+  details: ProductDetails | null;
+  createdAt: number;
+  senderId?: string | null;
+}
+
+/** Body of `POST /api/wishlist_link`. */
+export interface WishlistLinkPayload {
+  name: string;
+  productUrl: string;
+  price: number | null;
+  currency: string;
+  imageUrl: string | null;
+  description: string | null;
+  reviews: string | null;
+}
+
 export interface FinAccount {
   id: string;
   name: string;

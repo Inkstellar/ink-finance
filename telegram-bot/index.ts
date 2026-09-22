@@ -3,6 +3,8 @@ import { Telegraf, Markup, type Context } from 'telegraf';
 import { message } from 'telegraf/filters';
 import type { Update } from 'telegraf/types';
 import { analyzeReceipt, DEFAULT_CATEGORIES } from './ai-vision';
+import { extractProductDetails } from './wishlist-scraper';
+import { mdEscape } from './format';
 import { FinanceApiClient } from './api-client';
 import { todayIST } from './dates';
 import {
@@ -12,6 +14,7 @@ import {
 } from './analytics';
 import type {
   PendingTransaction, PendingLoan, ReceiptAnalysis, FinUser, TransactionRow,
+  PendingWishlistItem,
 } from './types';
 import { findUserByNumericId, planTelegramLink } from './link';
 
@@ -56,6 +59,9 @@ const pendingStep = new Map<string, 'user' | 'account' | 'transferTo'>();
 const loanDrafts = new Map<string, PendingLoan>();
 type LoanStep = 'tenure' | 'rate' | 'confirm';
 const loanStep = new Map<string, LoanStep>();
+
+// Pending wishlist items (scraped, awaiting confirmation)
+const pendingWishlist = new Map<string, PendingWishlistItem>();
 
 // Generate a short unique ID for pending transactions
 function shortId(): string {
@@ -997,13 +1003,44 @@ bot.action(/^loan_ok:([^:]+)$/, async ctx => {
   }
 });
 
-// ── Loan step: cancel ──────────────────────────────────────
-bot.action(/^loan_no:([^:]+)$/, async ctx => {
-  const pid = ctx.match[1];
-  loanDrafts.delete(pid);
-  loanStep.delete(pid);
-  await ctx.answerCbQuery('Cancelled');
-  await ctx.editMessageText('❌ Loan creation cancelled.');
+// ── Wishlist inline actions ──────────────────────────────
+bot.action(/^wish_yes:(.+)$/, async ctx => {
+  const name = decodeURIComponent(ctx.match[1]);
+  const pendingItem = pendingWishlist.get(name);
+  if (!pendingItem) {
+    await ctx.answerCbQuery('❌ Session expired or not found.');
+    await ctx.reply('That wishlist item is no longer available.');
+    return;
+  }
+
+  try {
+    if (!pendingItem.details) {
+      await ctx.answerCbQuery('❌ Product details are missing.');
+      await ctx.reply('I could not read the details of that product. Please send the link again.');
+      pendingWishlist.delete(name);
+      return;
+    }
+    await api.createWishlistLink(
+      { ...pendingItem.details, productUrl: pendingItem.productUrl },
+      {
+        userId: pendingItem.senderId ?? undefined,
+      },
+    );
+    await ctx.answerCbQuery('✅ Added to wishlist!');
+    await ctx.editMessageText('✅ This product has been added to your wishlist.');
+    pendingWishlist.delete(name);
+  } catch (err) {
+    console.error('[wish_yes] Error:', err);
+    await ctx.answerCbQuery('❌ Could not add to wishlist.');
+    await ctx.editMessageText('❌ There was an error adding this to your wishlist.');
+  }
+});
+
+bot.action(/^wish_no:(.+)$/, async ctx => {
+  const name = decodeURIComponent(ctx.match[1]);
+  pendingWishlist.delete(name);
+  await ctx.answerCbQuery('Skipped');
+  await ctx.editMessageText('⏭ Skipped adding to wishlist.');
 });
 
 // ── Photo handler (the main feature) ──────────────────────
@@ -1335,6 +1372,66 @@ bot.on(message('text'), async ctx => {
     return;
   }
 
+  // ── Wishlist Link handler ────────────────────────────
+  // Detect an http(s) URL in the message and convert it to a wishlist item.
+  const urlMatch = text.match(/https?:\/\/\S+/);
+  if (urlMatch) {
+    const url = urlMatch[0].trim();
+    const pid = shortId();
+    pendingWishlist.set(pid, { productUrl: url, details: null, createdAt: Date.now() });
+
+    await ctx.reply(
+      `🔍 *Scraping product details from ${mdEscape(url)}…*\n\n` +
+      `This may take 10–30 seconds. Please wait.`,
+      { parse_mode: 'Markdown' }
+    );
+
+    try {
+      const details = await extractProductDetails(url);
+      pendingWishlist.set(pid, { productUrl: url, details, createdAt: Date.now() });
+
+      const users = await api.getUsers();
+      const sender = users.find(u => u.telegramId && String(u.telegramId) === String(ctx.from.id));
+
+      const priceDisplay = details.price != null
+        ? (details.currency === 'INR'
+          ? `₹${details.price.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+          : `${details.currency} ${details.price}`)
+        : 'Price unknown';
+
+      await ctx.telegram.sendMessage(
+        ctx.chat.id,
+        `🛒 *Product found*\n\n` +
+        `🏷 *${mdEscape(details.name)}*\n` +
+        `💰 ${priceDisplay}\n` +
+        `📷 ${details.imageUrl ? '✓ Image found' : 'No image'}\n\n` +
+        `_Add this to your wishlist?_`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                Markup.button.callback('✅ Add to wishlist', `wish_yes:${pid}`),
+                Markup.button.callback('❌ Skip', `wish_no:${pid}`),
+              ],
+            ],
+          },
+        }
+      );
+
+      const entry = pendingWishlist.get(pid);
+      if (entry) entry.senderId = sender?.id || null;
+    } catch (e: any) {
+      console.error('[wishlist-scrape] Error:', e);
+      pendingWishlist.delete(pid);
+      await ctx.reply(
+        `❌ Could not fetch that product.\n_(${mdEscape(e.message?.slice(0, 150) ?? 'Unknown error')})_`,
+        { parse_mode: 'Markdown' }
+      );
+    }
+    return;
+  }
+
   await ctx.reply(
     '📸 Send a photo of a bill/receipt to auto-create a transaction.\n\n' +
     '*Or type a template:*\n' +
@@ -1360,6 +1457,11 @@ setInterval(() => {
     if (now - p.createdAt > PENDING_TTL) {
       loanDrafts.delete(id);
       loanStep.delete(id);
+    }
+  }
+  for (const [id, p] of pendingWishlist) {
+    if (now - p.createdAt > PENDING_TTL) {
+      pendingWishlist.delete(id);
     }
   }
 }, 60_000);

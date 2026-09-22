@@ -26,6 +26,7 @@ import AccountBalanceWalletIcon from '@mui/icons-material/AccountBalanceWallet';
 import PieChartIcon from '@mui/icons-material/PieChart';
 import PeopleIcon from '@mui/icons-material/People';
 import LogoutIcon from '@mui/icons-material/Logout';
+import FavoriteIcon from '@mui/icons-material/Favorite';
 import FinanceIcon from '@mui/icons-material/AccountBalance';
 import { useEffect } from 'react';
 import UserAvatar, { AVATAR_CHANGED_EVENT, type AvatarUser } from './UserAvatar';
@@ -51,6 +52,7 @@ const navGroups = [
       { label: 'Investments', path: '/investments', icon: <TrendingUpIcon /> },
       { label: 'Loans', path: '/loans', icon: <AccountBalanceIcon /> },
       { label: 'Budget', path: '/budget', icon: <PieChartIcon /> },
+      { label: 'Wishlist', path: '/wishlist', icon: <FavoriteIcon /> },
     ],
   },
   {

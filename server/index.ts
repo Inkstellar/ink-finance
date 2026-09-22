@@ -949,6 +949,107 @@ app.delete('/api/loans/:id/payments/:paymentId', async (req, res) => {
   res.json(withPublicUser(updated));
 });
 
+// ─── Wishlist ─────────────────────────────────────────────────
+
+/** A wishlist item is small; anything larger is a bug or an attack. */
+const MAX_WISHLIST_NOTES = 4000;
+
+/**
+ * Price from a scraped page is untrusted text — never let NaN reach Postgres.
+ *
+ * The model is asked for a bare number, but it answers with what the page
+ * showed: "₹1,299.50", "Rs. 1299", "N/A". Strip the decoration, and treat
+ * anything that still isn't a number as unknown rather than as zero.
+ */
+function normalisePrice(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw >= 0 ? raw : null;
+  }
+  if (typeof raw !== 'string') return null;
+
+  const digits = raw.replace(/[^0-9.]/g, '');
+  // No digit left at all means the page never showed a price ("N/A", "—"),
+  // which is unknown — not zero.
+  if (!/[0-9]/.test(digits)) return null;
+
+  const value = Number.parseFloat(digits);
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function normaliseNotes(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, MAX_WISHLIST_NOTES);
+}
+
+app.post('/api/wishlist', async (req, res) => {
+  const { name, price, currency, imageUrl, productUrl, notes } = req.body;
+  if (!name || !productUrl) {
+    return res.status(400).json({ error: 'Product name and URL are required' });
+  }
+  const item = await prisma.finWishlist.create({
+    data: {
+      name: String(name),
+      price: normalisePrice(price),
+      currency: currency || 'INR',
+      imageUrl: imageUrl || null,
+      productUrl: String(productUrl),
+      notes: normaliseNotes(notes),
+      // A browser session names itself; only a service-token caller may name
+      // someone else. See resolveActor.
+      userId: resolveActor(req).userId || null,
+    },
+  });
+  res.json(item);
+});
+
+app.get('/api/wishlist', async (req, res) => {
+  const { userId } = req.query;
+  const items = await prisma.finWishlist.findMany({
+    where: {
+      ...(userId ? { userId: String(userId) } : {}),
+    },
+    orderBy: { createdAt: 'desc' },
+    include: { user: { select: { id: true, name: true, initials: true, color: true } } },
+  });
+  res.json(items);
+});
+
+app.delete('/api/wishlist/:id', async (req, res) => {
+  const { id } = req.params;
+  const existing = await prisma.finWishlist.findUnique({ where: { id } });
+  if (!existing) {
+    return res.status(404).json({ error: 'Wishlist item not found' });
+  }
+  await prisma.finWishlist.delete({ where: { id } });
+  res.json({ success: true });
+});
+
+// Backend endpoint for the Telegram bot to post scraped product data
+app.post('/api/wishlist_link', async (req, res) => {
+  const { name, price, currency, imageUrl, productUrl, description, reviews } = req.body;
+  if (!name || !productUrl) {
+    return res.status(400).json({ error: 'Product name and URL are required' });
+  }
+  const item = await prisma.finWishlist.create({
+    data: {
+      name: String(name),
+      price: normalisePrice(price),
+      currency: currency || 'INR',
+      imageUrl: imageUrl || null,
+      productUrl: String(productUrl),
+      notes: normaliseNotes([description, reviews].filter(Boolean).join('\n\n')),
+      // The bot has no session, so it names the actor in headers — honoured
+      // only because the request proved it holds the service token.
+      userId: resolveActor(req).userId || null,
+    },
+  });
+  res.json(item);
+});
+
 // ─── Events (shared calendar) ───────────────────────────────
 
 /**

@@ -35,6 +35,7 @@
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
     "test:bot": "tsx scripts/bot-analytics.test.ts",
+    "test:format": "tsx scripts/bot-format.test.ts",
     "test:tx": "node scripts/transactions-smoke.mjs",
     "test:avatar": "node scripts/avatar-smoke.mjs",
     "test:privacy": "node scripts/privacy-smoke.mjs",
@@ -45,6 +46,7 @@
     "test:pwa": "node scripts/pwa.test.mjs",
     "test:calendar": "tsx scripts/calendar.test.ts",
     "test:events": "node scripts/events-smoke.mjs",
+    "test:wishlist": "node scripts/wishlist-smoke.mjs",
     "test:backup": "node scripts/backup-format.test.mjs",
     "test:backup-restore": "node scripts/backup-roundtrip.mjs"
   },

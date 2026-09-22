@@ -93,8 +93,25 @@ model FinUser {
   transactions FinTransaction[]
   loans        FinLoan[]
   events       FinEvent[]
+  wishlist     FinWishlist[]
 
   @@map("fin_users")
+}
+
+model FinWishlist {
+  id          String   @id @default(cuid())
+  name        String   // Product name
+  price       Float?   // Current price at time of adding
+  currency    String   @default("INR")
+  imageUrl    String?  // Link to product image
+  productUrl  String   // Source link (Amazon/Flipkart)
+  notes       String?  // User's reason for wanting it
+  userId      String?  // Who wants it?
+  user        FinUser?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("fin_wishlist")
 }
 
 // ─── Transactions ───────────────────────────────────────────

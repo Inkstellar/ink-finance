@@ -11,6 +11,7 @@ Personal finance manager for tracking home finances, personal investments, and l
 - **Loans** — Track active loans (home, car, personal), record EMI payments, view amortization; edit any loan's terms, change its status, remove a mis-entered payment, or delete it
 - **Budget** — Set monthly budgets per category, track spending progress
 - **Calendar** — A shared household calendar: mark events for either person, colour-coded by owner, with multi-day and timed events (see below)
+- **Wishlist** — Paste a product link into the Telegram bot and it scrapes the name, price, image and reviews; items are attributed to whoever sent the link (see below)
 - **Users** — Manage household members, their logins and profile pictures
 - **Installable** — a PWA, so it can be added to a phone's home screen and open full screen (see below)
 - **Telegram Bot** — Send a photo of any bill/receipt/UPI screenshot to @inkfin_bot; AI vision extracts merchant, amount, date, and category, then you confirm with one tap
@@ -60,6 +61,7 @@ Tables (all prefixed with `fin_`):
 - `fin_loans` — Loan accounts with principal, interest, EMI tracking
 - `fin_loan_payments` — EMI payment history with principal/interest breakdown
 - `fin_events` — Shared household calendar entries (see [Calendar](#calendar))
+- `fin_wishlist` — Products scraped from a link sent to the bot (see [Wishlist](#wishlist))
 
 ### Backups
 
@@ -146,9 +148,11 @@ npm run test:avatar  # profile pictures: upload, serve, ETag, every rejection
 npm run test:loans
 npm run test:tx
 npm run test:events  # calendar events: month windows, multi-day overlap, validation
+npm run test:wishlist # wishlist: scraped prices, attribution, ownership of the actor header
 npm run test:privacy # no endpoint leaks a password hash or an avatar
 npm run test:alerts  # transaction alerts: who is messaged, and who is not
 npm run test:bot     # pure analytics: templates, bucketing, reports
+npm run test:format  # pure: escaping text that goes into a Telegram message
 npm run test:notify  # pure: alert wording, escaping, recipient selection
 npm run test:pwa     # pure: manifest, icons, head tags, the service worker
 npm run test:calendar # pure: the month grid, day bucketing, timezone independence
@@ -299,6 +303,43 @@ the Loans page if you need to split interest).
 ```
 
 Reports show totals in and out, a by-category breakdown, then the rows themselves.
+
+### Wishlist
+
+Paste any shopping link into the bot and it becomes a wishlist item:
+
+1. The bot fetches the page through [Jina Reader](https://r.jina.ai) (`https://r.jina.ai/<url>`),
+   which renders it to clean Markdown. That is what gets past the bot-blocking and
+   the JavaScript-only markup on Amazon and Flipkart — a plain `fetch` returns a
+   shell with no price in it.
+2. The AI (`AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL`, the same router the receipt
+   analyser uses) extracts name, price, currency, image URL, a one-line
+   description and a review summary.
+3. The bot replies with a card — name, price, whether an image was found — and an
+   **Add to wishlist** button. Nothing is saved until you tap it.
+4. The item appears on the **Wishlist** page, tagged with the person who sent the
+   link.
+
+The bot's *first* message that contains a URL is treated as a product link, so
+send the link on its own.
+
+**A scraped price is untrusted text.** The model is asked for a bare number and
+answers with whatever the page showed — `₹1,299.50`, `Rs. 1299`, `N/A`. The API
+strips the decoration and, when no digits remain, stores `NULL` rather than zero
+or `NaN`. A `NaN` would be rejected by Postgres and take the whole insert with
+it, so `npm run test:wishlist` pins this down, along with the case where the
+caller tries to name a different owner in the request body.
+
+**Who owns an item** is decided by `resolveActor`, the same helper the alerts
+use: a browser session names its own user, and only a caller holding the service
+token may name someone else in `X-Actor-User-Id`. A `userId` in the request body
+is ignored.
+
+**Product titles are escaped** (`telegram-bot/format.ts`) before they go into a
+message. Every message the bot sends uses `parse_mode: 'Markdown'`, and a title
+like `Men's *Pack of 2* [Blue]` is enough for Telegram to reject the whole
+message — the card would simply never arrive. `npm run test:format` covers the
+characters that matter.
 
 ### Alerts
 
@@ -521,12 +562,16 @@ The Express API server runs on port 3456 with these endpoints:
 | PUT | `/api/loans/:id` | Update loan status |
 | GET/POST | `/api/events` | List events overlapping a date window / create one |
 | PUT/DELETE | `/api/events/:id` | Update / delete an event |
+| GET/POST | `/api/wishlist` | List / add wishlist items (newest first, owner joined) |
+| DELETE | `/api/wishlist/:id` | Remove a wishlist item (404 if already gone) |
+| POST | `/api/wishlist_link` | Scraped product data from the bot; `description` + `reviews` become `notes` |
 
 `POST /api/transactions` accepts two optional headers, `X-Actor-User-Id` and
 `X-Actor-Telegram-Id`, naming who entered the transaction so their alert can be
 skipped. They are honoured **only** from a caller holding the service token —
 a browser session names its own user, so it cannot silence someone else's alert
-by claiming to be them.
+by claiming to be them. `POST /api/wishlist` and `POST /api/wishlist_link`
+attribute their rows through the same rule.
 
 ## Project Structure
 
@@ -542,6 +587,8 @@ ink-finance/
 ├── telegram-bot/            # Telegram bot service
 │   ├── index.ts             # Bot logic, inline keyboards, handlers
 │   ├── ai-vision.ts         # AI vision receipt analysis (+ model fallback)
+│   ├── wishlist-scraper.ts  # URL → product details, via Jina Reader + AI
+│   ├── format.ts            # Telegram Markdown escaping
 │   ├── api-client.ts        # ink-finance REST API client
 │   └── types.ts             # Shared types
 ├── src/
@@ -564,6 +611,7 @@ ink-finance/
 │   │   ├── Transactions.tsx
 │   │   ├── Investments.tsx
 │   │   ├── Loans.tsx
+│   │   ├── Wishlist.tsx     # Scraped products, one card each
 │   │   └── Budget.tsx
 │   ├── App.tsx              # Router + layout
 │   ├── main.tsx             # Entry point
@@ -577,7 +625,9 @@ ink-finance/
 │   ├── generate-icons.mjs   # npm run icons
 │   ├── pwa.test.mjs         # npm run test:pwa
 │   ├── calendar.test.ts     # npm run test:calendar
+│   ├── bot-format.test.ts   # npm run test:format
 │   ├── events-smoke.mjs     # npm run test:events (needs a running API)
+│   ├── wishlist-smoke.mjs   # npm run test:wishlist (needs a running API)
 │   ├── db-backup.mjs        # npm run db:backup — dump / inspect / restore
 │   ├── backup-format.mjs    # pure encode/decode for the backup file
 │   ├── backup-format.test.mjs # npm run test:backup

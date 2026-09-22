@@ -8,6 +8,7 @@ import type {
   CreateLoanPayload,
   TransactionQuery,
   TransactionRow,
+  WishlistLinkPayload,
 } from './types';
 
 /**
@@ -156,6 +157,31 @@ export class FinanceApiClient {
     payload: { amount: number; principal: number; interest: number; balance: number; paidOn: string },
   ): Promise<FinLoanPayment> {
     return this.postJson<FinLoanPayment>(`/api/loans/${loanId}/payment`, payload);
+  }
+
+  // ── Wishlist ───────────────────────────────────────────────
+
+  async createWishlistLink(
+    { name, productUrl, price, currency, imageUrl, description, reviews }: WishlistLinkPayload,
+    actor?: {
+      userId?: string | null;
+      telegramId?: string | number | null;
+    },
+  ): Promise<Record<string, unknown>> {
+    const payload = {
+      name,
+      productUrl,
+      price: price ?? null,
+      currency: currency || 'INR',
+      imageUrl,
+      description,
+      reviews,
+    };
+
+    const headers: Record<string, string> = {};
+    if (actor?.userId) headers['X-Actor-User-Id'] = actor.userId;
+    if (actor?.telegramId != null) headers['X-Actor-Telegram-Id'] = String(actor.telegramId);
+    return this.postJson('/api/wishlist_link', payload, headers);
   }
 
   // ── Dashboard ─────────────────────────────────────────────

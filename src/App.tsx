@@ -17,6 +17,7 @@ import Transactions from './pages/Transactions';
 import Investments from './pages/Investments';
 import Loans from './pages/Loans';
 import Budget from './pages/Budget';
+import Wishlist from './pages/Wishlist';
 import Users from './pages/Users';
 import Login from './pages/Login';
 import OfflineBanner from './components/OfflineBanner';
@@ -118,6 +119,7 @@ export default function App() {
             <Route path="/investments" element={<Investments />} />
             <Route path="/loans" element={<Loans />} />
             <Route path="/budget" element={<Budget />} />
+            <Route path="/wishlist" element={<Wishlist />} />
             <Route path="/users" element={<Users />} />
           </Routes>
         </Box>
