@@ -47,6 +47,9 @@ jobs:
       - name: Telegram Markdown escaping
         run: npm run test:format
 
+      - name: Scraped-product field mapping and price parsing
+        run: npm run test:scraper
+
       - name: Transaction alert unit tests
         run: npm run test:notify
 

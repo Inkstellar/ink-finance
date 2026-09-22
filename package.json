@@ -36,6 +36,7 @@
     "db:studio": "prisma studio",
     "test:bot": "tsx scripts/bot-analytics.test.ts",
     "test:format": "tsx scripts/bot-format.test.ts",
+    "test:scraper": "tsx scripts/wishlist-parse.test.ts",
     "test:tx": "node scripts/transactions-smoke.mjs",
     "test:avatar": "node scripts/avatar-smoke.mjs",
     "test:privacy": "node scripts/privacy-smoke.mjs",

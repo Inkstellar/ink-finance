@@ -960,6 +960,9 @@ const MAX_WISHLIST_NOTES = 4000;
  * The model is asked for a bare number, but it answers with what the page
  * showed: "₹1,299.50", "Rs. 1299", "N/A". Strip the decoration, and treat
  * anything that still isn't a number as unknown rather than as zero.
+ *
+ * Only dots *between* digits count as a decimal point: keeping every dot turns
+ * "Rs. 1299" into ".1299", which stores twelve paise.
  */
 function normalisePrice(raw: unknown): number | null {
   if (raw === null || raw === undefined || raw === '') return null;
@@ -969,7 +972,9 @@ function normalisePrice(raw: unknown): number | null {
   }
   if (typeof raw !== 'string') return null;
 
-  const digits = raw.replace(/[^0-9.]/g, '');
+  const digits = raw
+    .replace(/[^0-9.]/g, '')
+    .replace(/(?<![0-9])\.|\.(?![0-9])/g, '');
   // No digit left at all means the page never showed a price ("N/A", "—"),
   // which is unknown — not zero.
   if (!/[0-9]/.test(digits)) return null;

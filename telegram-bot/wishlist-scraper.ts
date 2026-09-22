@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import type { ProductDetails } from './types';
+import { toProductDetails } from './product-parse';
 
 /**
  * Turn a shopping URL into structured product details.
@@ -29,49 +30,43 @@ const client = new OpenAI({ apiKey, baseURL });
 /** Give up on the reader rather than hanging the bot's message handler. */
 const READER_TIMEOUT_MS = 30_000;
 
-/** Cap what we hand the model, so one huge page can't blow up the request. */
-const MAX_MARKDOWN_CHARS = 12_000;
+/**
+ * Cap what we hand the model, so one huge page can't blow up the request.
+ *
+ * This has to clear the page's navigation block, which is not small: on an
+ * Amazon India product page the chrome (skip links, menus, keyboard shortcuts)
+ * runs to roughly 12 KB, and the price sits just past it at ~12.5 KB. A 12 KB
+ * cap therefore sent the model a menu and nothing else, and every scrape came
+ * back with no price. Real pages run 100–400 KB, so 60 KB covers the product
+ * region without paying for the recommendations at the bottom.
+ */
+const MAX_MARKDOWN_CHARS = 60_000;
 
 export type { ProductDetails };
-
-/**
- * Price arrives from the model as free text ("₹1,299", "1299.00", "N/A").
- * Returns null for anything that is not a finite positive number — a NaN
- * would reach Postgres as an invalid float and fail the whole insert.
- */
-function parsePrice(raw: unknown): number | null {
-  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
-  if (typeof raw !== 'string') return null;
-
-  const cleaned = raw.replace(/[^0-9.]/g, '');
-  if (!cleaned) return null;
-
-  const value = Number.parseFloat(cleaned);
-  return Number.isFinite(value) ? value : null;
-}
-
-/** Trim to a string, or null — the model sometimes returns objects/arrays. */
-function parseText(raw: unknown): string | null {
-  if (typeof raw !== 'string') return null;
-  const trimmed = raw.trim();
-  return trimmed.length ? trimmed : null;
-}
 
 async function extractWithModel(
   modelName: string,
   markdown: string,
 ): Promise<ProductDetails> {
-  const prompt = `You are a shopping assistant. Extract the following details from the
+  const prompt = `You are a shopping assistant. Extract the product details from the
 markdown of a product page below.
 
-- Product Name: be precise, drop site names and marketing suffixes
-- Price: numerical value only, no currency symbols or thousands separators
-- Currency: ISO code, e.g. INR, USD
-- Primary Product Image URL: the main product image (must be an absolute http(s) URL)
-- Short Description: one sentence
-- Review Summary: e.g. "4.5 stars from 1k reviews"
+Respond with ONLY a JSON object — no markdown fences, no commentary — using
+exactly these keys:
+{
+  "name": "the product name, precise, without the site name or marketing suffixes",
+  "price": 1049.00,
+  "currency": "INR",
+  "imageUrl": "https://…",
+  "description": "one sentence",
+  "reviews": "4.2 out of 5 stars from 41 reviews"
+}
 
-Use null for any field that is genuinely not present. Never invent a price.
+Rules:
+- "price" is a number only — no currency symbol, no thousands separator.
+- "currency" is an ISO code, e.g. INR or USD.
+- "imageUrl" must be an absolute http(s) URL of the main product image.
+- Use null for any field that is genuinely not present. Never invent a price.
 
 Markdown content:
 ${markdown.slice(0, MAX_MARKDOWN_CHARS)}`;
@@ -91,16 +86,7 @@ ${markdown.slice(0, MAX_MARKDOWN_CHARS)}`;
 
   const data = JSON.parse(aiResponse.choices[0]?.message?.content || '{}') as Record<string, unknown>;
 
-  const name = parseText(data.name) ?? parseText(data.productName);
-
-  return {
-    name: name ?? 'Unknown Product',
-    price: parsePrice(data.price),
-    currency: parseText(data.currency)?.toUpperCase() ?? 'INR',
-    imageUrl: parseText(data.imageUrl),
-    description: parseText(data.description),
-    reviews: parseText(data.reviews),
-  };
+  return toProductDetails(data);
 }
 
 /**

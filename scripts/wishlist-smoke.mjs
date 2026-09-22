@@ -140,6 +140,25 @@ async function main() {
       `status ${unreadable.status}, price ${JSON.stringify(unreadable.data?.price)}`,
     );
 
+    // "Rs. 1299" is the case where a naive strip keeps the dot from "Rs."
+    // and stores 0.1299 — twelve paise for a two-hundred-rupee item.
+    const abbreviated = await call(
+      '/api/wishlist_link',
+      'POST',
+      {
+        name: `${tag} — Rs. prefix`,
+        productUrl: 'https://example.com/p/6',
+        price: 'Rs. 1299',
+      },
+      { 'X-Actor-User-Id': owner.id },
+    );
+    created.push(abbreviated.data?.id);
+    check(
+      'the dot in "Rs." is not read as a decimal point',
+      abbreviated.data?.price === 1299,
+      `got ${JSON.stringify(abbreviated.data?.price)}`,
+    );
+
     const nanPrice = await call('/api/wishlist_link', 'POST', {
       name: `${tag} — junk price`,
       productUrl: 'https://example.com/p/4',

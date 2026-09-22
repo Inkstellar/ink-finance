@@ -153,6 +153,7 @@ npm run test:privacy # no endpoint leaks a password hash or an avatar
 npm run test:alerts  # transaction alerts: who is messaged, and who is not
 npm run test:bot     # pure analytics: templates, bucketing, reports
 npm run test:format  # pure: escaping text that goes into a Telegram message
+npm run test:scraper # pure: scraped-product fields, and prices like "Rs. 1299"
 npm run test:notify  # pure: alert wording, escaping, recipient selection
 npm run test:pwa     # pure: manifest, icons, head tags, the service worker
 npm run test:calendar # pure: the month grid, day bucketing, timezone independence
@@ -323,12 +324,28 @@ Paste any shopping link into the bot and it becomes a wishlist item:
 The bot's *first* message that contains a URL is treated as a product link, so
 send the link on its own.
 
+**Two things had to be measured against a real page**, because both fail
+silently — the item saves, it is just empty:
+
+- **The model echoes the prompt's field labels as JSON keys.** Ask for
+  "Product Name" and the reply is `{"Product Name": …}`, not `{"name": …}`. The
+  prompt now shows the exact JSON shape (the pattern `ai-vision.ts` already
+  used), and `product-parse.ts` matches keys ignoring case, spaces, underscores
+  and hyphens, so the label spelling cannot lose the data again.
+- **A page's navigation block is not small.** On an Amazon India product page the
+  chrome runs to ~12 KB and the price sits just past it at ~12.5 KB, so the
+  original 12 KB cap sent the model a menu and nothing else. The cap is 60 KB:
+  enough to clear the chrome, not enough to pay for the recommendations at the
+  bottom.
+
 **A scraped price is untrusted text.** The model is asked for a bare number and
 answers with whatever the page showed — `₹1,299.50`, `Rs. 1299`, `N/A`. The API
 strips the decoration and, when no digits remain, stores `NULL` rather than zero
 or `NaN`. A `NaN` would be rejected by Postgres and take the whole insert with
-it, so `npm run test:wishlist` pins this down, along with the case where the
-caller tries to name a different owner in the request body.
+it. Only dots *between* digits count as a decimal point: keeping every dot turns
+`Rs. 1299` into `.1299`, which is twelve paise. `npm run test:scraper` and
+`npm run test:wishlist` pin both, along with the case where the caller tries to
+name a different owner in the request body.
 
 **Who owns an item** is decided by `resolveActor`, the same helper the alerts
 use: a browser session names its own user, and only a caller holding the service
@@ -588,6 +605,7 @@ ink-finance/
 │   ├── index.ts             # Bot logic, inline keyboards, handlers
 │   ├── ai-vision.ts         # AI vision receipt analysis (+ model fallback)
 │   ├── wishlist-scraper.ts  # URL → product details, via Jina Reader + AI
+│   ├── product-parse.ts     # the model's JSON → the fields we store
 │   ├── format.ts            # Telegram Markdown escaping
 │   ├── api-client.ts        # ink-finance REST API client
 │   └── types.ts             # Shared types
@@ -626,6 +644,7 @@ ink-finance/
 │   ├── pwa.test.mjs         # npm run test:pwa
 │   ├── calendar.test.ts     # npm run test:calendar
 │   ├── bot-format.test.ts   # npm run test:format
+│   ├── wishlist-parse.test.ts # npm run test:scraper
 │   ├── events-smoke.mjs     # npm run test:events (needs a running API)
 │   ├── wishlist-smoke.mjs   # npm run test:wishlist (needs a running API)
 │   ├── db-backup.mjs        # npm run db:backup — dump / inspect / restore
