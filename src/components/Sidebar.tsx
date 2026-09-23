@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Drawer,
   List,
@@ -13,6 +13,8 @@ import {
   Stack,
   Tooltip,
   Badge,
+  Link,
+  Chip,
 } from '@mui/material';
 import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
@@ -27,6 +29,7 @@ import PieChartIcon from '@mui/icons-material/PieChart';
 import PeopleIcon from '@mui/icons-material/People';
 import LogoutIcon from '@mui/icons-material/Logout';
 import FavoriteIcon from '@mui/icons-material/Favorite';
+import LabelIcon from '@mui/icons-material/Label';
 import FinanceIcon from '@mui/icons-material/AccountBalance';
 import { useEffect } from 'react';
 import UserAvatar, { AVATAR_CHANGED_EVENT, type AvatarUser } from './UserAvatar';
@@ -58,6 +61,7 @@ const navGroups = [
   {
     title: 'Management',
     items: [
+      { label: 'Categories', path: '/categories', icon: <LabelIcon /> },
       { label: 'Users', path: '/users', icon: <PeopleIcon /> },
     ],
   },
@@ -70,6 +74,26 @@ interface SidebarContentProps {
 
 function SidebarContent({ user, onClose }: SidebarContentProps) {
   const location = useLocation();
+  // Api Health Status
+  const [apiStatus, setApiStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+
+  useEffect(() => {
+    let isMounted = true;
+    async function checkApi() {
+      try {
+        const res = await fetch('/api/health', { method: 'HEAD', cache: 'no-store' });
+        if (isMounted) setApiStatus(res.ok ? 'online' : 'offline');
+      } catch {
+        if (isMounted) setApiStatus('offline');
+      }
+    }
+    checkApi();
+    const interval = setInterval(checkApi, 30000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   // The session JWT carries the user id, name and initials — but deliberately
   // not the picture: a base64 image would blow past the ~4KB cookie limit. So
@@ -276,6 +300,50 @@ function SidebarContent({ user, onClose }: SidebarContentProps) {
         {/* Renders nothing once the app is installed or when the browser
             offers no way to install it. */}
         <InstallApp onNavigate={onClose} />
+        
+        <Box sx={{ mb: 2, px: 0.5 }}>
+          {apiStatus === 'checking' ? (
+            <Chip 
+              size="small" 
+              label="Checking API..." 
+              variant="outlined" 
+              sx={{ width: '100%', justifyContent: 'center', fontSize: '0.7rem' }} 
+            />
+          ) : apiStatus === 'online' ? (
+            <Chip 
+              size="small" 
+              label="API Online" 
+              color="success" 
+              variant="outlined"
+              sx={{ width: '100%', justifyContent: 'center', fontSize: '0.7rem' }} 
+            />
+          ) : (
+            <Box sx={{ textAlign: 'center' }}>
+              <Chip 
+                size="small" 
+                label="API Offline" 
+                color="error" 
+                variant="filled"
+                sx={{ width: '100%', justifyContent: 'center', fontSize: '0.7rem', mb: 0.5 }} 
+              />
+              <Link 
+                href="https://Ink-finance-api.onrender.com" 
+                target="_blank" 
+                rel="noopener noreferrer"
+                sx={{ 
+                  fontSize: '0.65rem', 
+                  color: 'error.main', 
+                  textDecoration: 'none', 
+                  fontWeight: 600,
+                  '&:hover': { textDecoration: 'underline' }
+                }}
+              >
+                Wake up API server →
+              </Link>
+            </Box>
+          )}
+        </Box>
+
         <Button
           fullWidth
           variant="outlined"
