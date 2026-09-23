@@ -194,29 +194,20 @@ function SidebarContent({ user, onClose }: SidebarContentProps) {
                       sx={{
                         mx: 1,
                         mb: 0.25,
-                        // Square corners on purpose: the active and hover
-                        // backgrounds are flat blocks, not pills.
-                        borderRadius: 0,
+                        borderRadius: '4px',
                         px: 2,
                         minHeight: 48,
                         ...(active && {
-                          // `&.Mui-selected`, not a bare `bgcolor`. ListItemButton
-                          // sets its own selected background through a two-class
-                          // selector, which outranks a single sx class — so the
-                          // background silently stayed at action.selected while
-                          // `color: 'white'` below did apply, leaving white text
-                          // on near-white (about 1.1:1, i.e. invisible). Naming
-                          // the class here wins the specificity contest.
                           '&.Mui-selected': {
-                            bgcolor: 'primary.main',
+                            bgcolor: 'rgb(110 102 200)',
                             color: 'white',
                             '& .MuiListItemIcon-root': { color: 'white' },
-                            '&:hover': { bgcolor: 'primary.dark' },
+                            '&:hover': { bgcolor: 'rgb(90 82 180)' },
                           },
                         }),
                         '&:hover': {
                           ...(active
-                            ? { bgcolor: 'primary.dark' }
+                            ? { bgcolor: 'rgb(90 82 180)' }
                             : { bgcolor: 'action.hover' }),
                         },
                         transition: 'all 0.2s ease',
