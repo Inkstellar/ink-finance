@@ -13,7 +13,6 @@ import {
   Stack,
   Tooltip,
   Badge,
-  Link,
   Chip,
 } from '@mui/material';
 import MenuIcon from '@mui/icons-material/Menu';
@@ -31,7 +30,6 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import FavoriteIcon from '@mui/icons-material/Favorite';
 import LabelIcon from '@mui/icons-material/Label';
 import FinanceIcon from '@mui/icons-material/AccountBalance';
-import { useEffect } from 'react';
 import UserAvatar, { AVATAR_CHANGED_EVENT, type AvatarUser } from './UserAvatar';
 import InstallApp from './InstallApp';
 import { useApi } from '../hooks/useApi';
@@ -326,20 +324,21 @@ function SidebarContent({ user, onClose }: SidebarContentProps) {
                 variant="filled"
                 sx={{ width: '100%', justifyContent: 'center', fontSize: '0.7rem', mb: 0.5 }} 
               />
-              <Link 
+              <a 
                 href="https://Ink-finance-api.onrender.com" 
                 target="_blank" 
                 rel="noopener noreferrer"
-                sx={{ 
+                style={{ 
                   fontSize: '0.65rem', 
-                  color: 'error.main', 
+                  color: '#d32f2f', 
                   textDecoration: 'none', 
                   fontWeight: 600,
-                  '&:hover': { textDecoration: 'underline' }
                 }}
+                onMouseOver={(e) => e.currentTarget.style.textDecoration = 'underline'}
+                onMouseOut={(e) => e.currentTarget.style.textDecoration = 'none'}
               >
                 Wake up API server →
-              </Link>
+              </a>
             </Box>
           )}
         </Box>
